@@ -82,11 +82,16 @@ Clés utiles :
 - `code_tiers` / `code_depot` : fournisseur et dépôt du bon (optionnels,
   créés automatiquement s'ils manquent et `create_missing_tiers = true`).
 - `match_famille_par_intitule` : si `true` (défaut), la colonne `Famille` de
-  l'Excel est rapprochée d'une **famille existante** par son intitulé
-  (ex. `SCOLAIRE`, `Tous`).
-- `default_famille` : famille de repli pour les articles dont la famille
-  n'est pas reconnue. **Mettez-y le code d'une famille existante de votre
-  base** (souvent la famille racine, ex. `TOUS`). Elle est créée si absente.
+  l'Excel est rapprochée d'une **famille existante** par son **nom** (intitulé,
+  ex. `SCOLAIRE`, `Tous`) — jamais par code.
+- `create_missing_familles` : si `true` (défaut), lorsqu'aucune famille
+  existante ne correspond au nom, **une nouvelle famille est créée par son
+  nom** (l'intitulé de l'Excel), avec un **code généré automatiquement**
+  (numérique, suite des codes existants) et rattachée à `default_famille`.
+  Si `false`, les familles non reconnues retombent sur `default_famille`.
+- `default_famille` : famille racine / de repli. **Mettez-y le code d'une
+  famille existante de votre base** (souvent la racine, ex. `TOUS`) ; les
+  familles créées y sont rattachées. Elle est créée si absente.
 - `default_unite` : unité de base des articles créés. **Vide par défaut**,
   comme dans le logiciel (les articles n'ont pas d'unité imposée).
 - `etat` : état de la pièce. **`null` par défaut**, comme toutes les pièces

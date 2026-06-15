@@ -75,12 +75,13 @@ DEFAULT_CONFIG = {
     "create_missing_tiers": True,   # creer le fournisseur/depot s'ils manquent
 
     # --- Valeurs par defaut pour les nouveaux articles ----------------------
-    "default_famille": "DIVERS",    # code famille par defaut si non trouvee
-    "default_famille_intitule": "Divers",
+    "default_famille": "TOUS",      # famille racine / de repli (code d'une famille existante)
+    "default_famille_intitule": "Tous",
     "default_unite": "",            # code unite de base ; "" = aucune (comme le logiciel)
     "default_unite_intitule": "Unite",
     "default_tva": 19,              # TVA par defaut si absente de l'Excel
     "match_famille_par_intitule": True,  # associer la colonne "Famille" a une famille existante
+    "create_missing_familles": True,     # creer la famille (par son NOM) si aucune ne correspond
     "calc_prix_achat_ttc": True,    # renseigner aussi PRIXACHATTTC (= HT * (1+TVA/100))
 
     # --- Numerotation NOPIECE / NOITEM --------------------------------------
@@ -231,6 +232,7 @@ class Importer:
         self.cfg = cfg
         self.cur = con.cursor()
         self._famille_cache = None
+        self._fam_code_next = None
         # coefficients reels du type de piece (PIECE et ITEM)
         self.coeff_piece, self.coeff_piece_tr, \
             self.coeff_item, self.coeff_item_tr = self._load_type_coeffs()
@@ -300,17 +302,54 @@ class Importer:
                 "VALUES (?, ?, ?, ?)",
                 (code, (raison or code)[:200], categ, datetime.datetime.now()))
 
-    def resolve_famille(self, label):
-        """Associe le libelle 'Famille' de l'Excel a un code famille existant,
-        sinon retourne la famille par defaut."""
+    def _load_famille_cache(self):
+        if self._famille_cache is None:
+            self.cur.execute("SELECT CODEFAMILLE, INTITULE FROM FAMILLE")
+            self._famille_cache = {norm(i): c for c, i in self.cur.fetchall()}
+
+    def _next_famille_code(self):
+        """Genere un code famille numerique unique (max numerique + 1)."""
+        if self._fam_code_next is None:
+            self.cur.execute(
+                "SELECT MAX(CAST(CODEFAMILLE AS INTEGER)) FROM FAMILLE "
+                "WHERE CODEFAMILLE SIMILAR TO '[0-9]+' AND CHAR_LENGTH(CODEFAMILLE) <= 9")
+            self._fam_code_next = int(self.cur.fetchone()[0] or 0)
+        while True:
+            self._fam_code_next += 1
+            code = str(self._fam_code_next)
+            if not self.exists("SELECT 1 FROM FAMILLE WHERE CODEFAMILLE = ?", (code,)):
+                return code
+
+    def create_famille(self, label):
+        """Cree une famille portant le NOM (intitule) du libelle Excel, avec un
+        code genere automatiquement, rattachee a la famille par defaut."""
         cfg = self.cfg
-        if cfg.get("match_famille_par_intitule") and label:
-            if self._famille_cache is None:
-                self.cur.execute("SELECT CODEFAMILLE, INTITULE FROM FAMILLE")
-                self._famille_cache = {norm(i): c for c, i in self.cur.fetchall()}
+        code = self._next_famille_code()
+        parent = cfg["default_famille"] if self.exists(
+            "SELECT 1 FROM FAMILLE WHERE CODEFAMILLE = ?", (cfg["default_famille"],)) else None
+        self.cur.execute(
+            "INSERT INTO FAMILLE (CODEFAMILLE, CODEFAMILLE_M, INTITULE, TAUX_TVA) "
+            "VALUES (?, ?, ?, ?)",
+            (code, parent, label[:50], cfg["default_tva"]))
+        self._famille_cache[norm(label)] = code     # eviter les doublons
+        return code
+
+    def resolve_famille(self, label):
+        """Associe le libelle 'Famille' de l'Excel a une famille EXISTANTE par
+        son NOM (intitule). Si aucune ne correspond : cree la famille par son
+        nom (si create_missing_familles), sinon retourne la famille par defaut."""
+        cfg = self.cfg
+        if not label:
+            return cfg["default_famille"]
+        if cfg.get("match_famille_par_intitule"):
+            self._load_famille_cache()
             code = self._famille_cache.get(norm(label))
             if code:
                 return code
+        if cfg.get("create_missing_familles"):
+            self._load_famille_cache()
+            code = self._famille_cache.get(norm(label))
+            return code if code else self.create_famille(label)
         return cfg["default_famille"]
 
     # -- articles ---------------------------------------------------------

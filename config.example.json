@@ -22,6 +22,7 @@
   "default_unite_intitule": "Unite",
   "default_tva": 0,
   "match_famille_par_intitule": true,
+  "create_missing_familles": true,
   "calc_prix_achat_ttc": true,
 
   "reserved_id_threshold": 1000000,
