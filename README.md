@@ -18,9 +18,12 @@ Pour chaque ligne du fichier Excel :
      **vous** payez l'article.
    - **Prix de vente** laissé **VIDE** (`NULL`) — vous fixez vous-même votre
      prix de vente ensuite dans le logiciel.
-   - **Code-barres** = la référence article (`Ref. Art.`), ou la colonne
-     code-barres de l'Excel si elle existe. Ainsi le scan fonctionne sans
-     ressaisie.
+   - **Code-barres** : c'est la **référence article** (`Ref. Art.`) qui sert
+     de code scanné — comme dans le logiciel, où le champ `CODE_BARRES` reste
+     vide (et porte un index unique). Scanner le code-barres retrouve donc
+     l'article par sa référence, **sans ressaisie**. Si votre Excel a une
+     colonne code-barres distincte, elle est utilisée ; sinon mettez
+     `barcode_depuis_ref: true` pour recopier la référence dans `CODE_BARRES`.
 2. **Ajoute la ligne au Bon de réception**, ce qui **alimente le stock** avec
    la quantité reçue, au prix d'achat.
 
@@ -29,19 +32,24 @@ code-barres) ; seule la réception (entrée en stock) est créée.
 
 ## Conformité avec le logiciel
 
-L'outil reproduit fidèlement le fonctionnement interne de l'application :
+L'outil a été **comparé à une base de production réelle** et reproduit
+fidèlement le fonctionnement interne de l'application :
 
-| Élément              | Comportement                                                        |
-|----------------------|---------------------------------------------------------------------|
-| `NOPIECE` / `NOITEM` | tirés des générateurs `NEXTPIECE` / `NEXTITEM` (pas de collision)   |
-| `REF_PIECE`          | attribué automatiquement par le trigger `INSERT_PIECE`              |
-| Ligne (`ITEM`)       | `COEFF = 1`, `COEFF_TR = 0`, `ANNULEE = 1` → entrée en stock        |
-| `PRIXHT` de la ligne | = prix d'achat → le **PUMP** (coût moyen pondéré) est correct       |
-| Totaux pièce         | `MONTANTHT`, `TVA`, `MONTANTTTC` recalculés                         |
+| Élément              | Comportement                                                              |
+|----------------------|---------------------------------------------------------------------------|
+| `NOPIECE` / `NOITEM` | numérotés en `MAX + 1` (comme le logiciel), sans collision ; les plages réservées (ex. `8000000` inventaire) sont ignorées, et les générateurs `NEXTPIECE`/`NEXTITEM` sont synchronisés |
+| `REF_PIECE`          | attribué automatiquement par le trigger `INSERT_PIECE`                    |
+| `ETAT`               | laissé **`NULL`** (comme toutes les pièces de la base réelle)             |
+| `COEFF` pièce/ligne  | lus depuis la définition du type de pièce (`PC_AC_B` → `1`)               |
+| Ligne (`ITEM`)       | `COEFF = 1`, `ANNULEE = 1` → entrée en stock                              |
+| `PRIXHT` de la ligne | = prix d'achat → le **PUMP** (coût moyen pondéré) est correct             |
+| Article              | `CODE_BARRES` et unité laissés **vides** ; famille rattachée à une famille **existante** |
+| Totaux pièce         | `MONTANTHT`, `TVA`, `MONTANTTTC` recalculés                               |
 
-> Vérifié via la procédure `SPSTOCK` du logiciel : après import, la quantité
-> en stock et le PUMP correspondent exactement à une réception saisie à la
-> main.
+> **Vérifié via la procédure `SPSTOCK` du logiciel**, sur une base réelle de
+> 8105 articles : après import, la quantité en stock et le PUMP correspondent
+> exactement à une réception saisie à la main, et les articles déjà présents
+> sont détectés et **non recréés**.
 
 ## Installation
 
@@ -73,13 +81,22 @@ Clés utiles :
 
 - `code_tiers` / `code_depot` : fournisseur et dépôt du bon (optionnels,
   créés automatiquement s'ils manquent et `create_missing_tiers = true`).
-- `default_famille` / `default_unite` : famille et unité affectées aux
-  articles créés (créées si absentes).
-- `match_famille_par_intitule` : si `true`, la colonne `Famille` de l'Excel
-  est rapprochée d'une famille existante par son intitulé ; sinon la famille
-  par défaut est utilisée.
-- `barcode_depuis_ref` : si `true` (défaut), la référence article sert de
-  code-barres quand l'Excel n'a pas de colonne code-barres.
+- `match_famille_par_intitule` : si `true` (défaut), la colonne `Famille` de
+  l'Excel est rapprochée d'une **famille existante** par son intitulé
+  (ex. `SCOLAIRE`, `Tous`).
+- `default_famille` : famille de repli pour les articles dont la famille
+  n'est pas reconnue. **Mettez-y le code d'une famille existante de votre
+  base** (souvent la famille racine, ex. `TOUS`). Elle est créée si absente.
+- `default_unite` : unité de base des articles créés. **Vide par défaut**,
+  comme dans le logiciel (les articles n'ont pas d'unité imposée).
+- `etat` : état de la pièce. **`null` par défaut**, comme toutes les pièces
+  de la base.
+- `barcode_depuis_ref` : `false` par défaut — la **référence** sert de code
+  scanné et `CODE_BARRES` reste vide (conforme au logiciel). Mettez `true`
+  si vous voulez aussi recopier la référence dans `CODE_BARRES`.
+- `reserved_id_threshold` : seuil au-dessus duquel les numéros de pièce sont
+  considérés comme « plages réservées » (ex. `8000000` pour les inventaires)
+  et ignorés dans le calcul du prochain `NOPIECE` (défaut `1000000`).
 - `colonne_prix` : champ Excel utilisé comme prix d'achat (défaut `prix`,
   c.-à-d. la colonne `Prix HT`).
 

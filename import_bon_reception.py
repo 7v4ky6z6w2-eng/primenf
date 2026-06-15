@@ -66,7 +66,7 @@ DEFAULT_CONFIG = {
 
     # --- Type de piece -------------------------------------------------------
     "code_type_piece": "PC_AC_B",   # PC_AC_B = "Bons de reception"
-    "etat": "VA",                   # etat de la piece (validee)
+    "etat": None,                   # etat de la piece : le logiciel laisse NULL
 
     # --- Tiers / depot (optionnels) -----------------------------------------
     "code_tiers": "",               # code fournisseur ; "" = aucun
@@ -77,11 +77,18 @@ DEFAULT_CONFIG = {
     # --- Valeurs par defaut pour les nouveaux articles ----------------------
     "default_famille": "DIVERS",    # code famille par defaut si non trouvee
     "default_famille_intitule": "Divers",
-    "default_unite": "U",           # code unite de base par defaut
+    "default_unite": "",            # code unite de base ; "" = aucune (comme le logiciel)
     "default_unite_intitule": "Unite",
     "default_tva": 19,              # TVA par defaut si absente de l'Excel
     "match_famille_par_intitule": True,  # associer la colonne "Famille" a une famille existante
     "calc_prix_achat_ttc": True,    # renseigner aussi PRIXACHATTTC (= HT * (1+TVA/100))
+
+    # --- Numerotation NOPIECE / NOITEM --------------------------------------
+    # Le logiciel numerote en MAX(NOPIECE)+1 (le generateur peut etre obsolete).
+    # On calcule donc le prochain numero a partir du MAX existant ET du
+    # generateur, en ignorant les plages reservees (ex: 8000000 pour les
+    # inventaires) au-dela de ce seuil.
+    "reserved_id_threshold": 1000000,
 
     # --- Mapping des colonnes Excel -> alias acceptes (insensible accents/casse)
     "colonnes": {
@@ -95,10 +102,13 @@ DEFAULT_CONFIG = {
                         "code a barre", "code a barres", "ean", "ean13", "gencode",
                         "barcode", "code barre article"],
     },
-    # Code-barres : si l'Excel n'a pas de colonne code-barres, on utilise la
-    # reference article (Ref. Art.) comme code-barres -> scan direct, pas de
-    # ressaisie.
-    "barcode_depuis_ref": True,
+    # Code-barres : dans le logiciel, c'est la REFERENCE ARTICLE (Ref. Art.)
+    # qui sert de code scanne (CODE_BARRES reste vide, et il porte un index
+    # UNIQUE). On laisse donc CODE_BARRES vide par defaut : scanner le
+    # code-barres retrouve l'article par sa reference, sans ressaisie.
+    # Mettre True pour recopier malgre tout la reference dans CODE_BARRES,
+    # ou fournir une colonne code-barres distincte dans l'Excel.
+    "barcode_depuis_ref": False,
     # Colonne a utiliser comme prix d'achat (= prix de vente du fournisseur)
     "colonne_prix": "prix",
 }
@@ -221,11 +231,49 @@ class Importer:
         self.cfg = cfg
         self.cur = con.cursor()
         self._famille_cache = None
+        # coefficients reels du type de piece (PIECE et ITEM)
+        self.coeff_piece, self.coeff_piece_tr, \
+            self.coeff_item, self.coeff_item_tr = self._load_type_coeffs()
 
     # -- helpers ----------------------------------------------------------
-    def gen_id(self, generator):
-        self.cur.execute("SELECT GEN_ID(%s, 1) FROM RDB$DATABASE" % generator)
-        return str(self.cur.fetchone()[0])
+    def _load_type_coeffs(self):
+        """Lit les coefficients du type de piece (defaut : reception +1)."""
+        self.cur.execute(
+            "SELECT COEFF_PIECE, COEFF_PIECE_TR, COEFF_ITEM, COEFF_ITEM_TR "
+            "FROM LOCAL_TYPE_PIECE WHERE CODE_TYPE_PIECE = ?",
+            (self.cfg["code_type_piece"],))
+        row = self.cur.fetchone()
+        if not row:
+            return 1, 0, 1, 0
+        return (row[0] if row[0] is not None else 1,
+                row[1] if row[1] is not None else 0,
+                row[2] if row[2] is not None else 1,
+                row[3] if row[3] is not None else 0)
+
+    def gen_value(self, generator):
+        self.cur.execute("SELECT GEN_ID(%s, 0) FROM RDB$DATABASE" % generator)
+        return self.cur.fetchone()[0] or 0
+
+    def advance_generator(self, generator, target):
+        """Avance le generateur jusqu'a 'target' (jamais en arriere)."""
+        cur = self.gen_value(generator)
+        if target > cur:
+            self.cur.execute("SELECT GEN_ID(%s, %d) FROM RDB$DATABASE"
+                             % (generator, target - cur))
+            self.cur.fetchone()
+
+    def next_base(self, generator, table, col):
+        """Base de numerotation = max(MAX numerique existant, generateur).
+        Reproduit le 'MAX+1' du logiciel tout en restant au-dessus du
+        generateur, en ignorant les plages reservees (> seuil)."""
+        threshold = int(self.cfg.get("reserved_id_threshold", 1000000))
+        self.cur.execute(
+            "SELECT MAX(CAST(%s AS BIGINT)) FROM %s "
+            "WHERE %s SIMILAR TO '[0-9]+' AND CHAR_LENGTH(%s) <= 15 "
+            "  AND CAST(%s AS BIGINT) < ?" % (col, table, col, col, col),
+            (threshold,))
+        mx = self.cur.fetchone()[0] or 0
+        return max(int(mx), int(self.gen_value(generator)))
 
     def exists(self, sql, params):
         self.cur.execute(sql, params)
@@ -239,17 +287,18 @@ class Importer:
                 (code, intitule[:50], self.cfg["default_tva"]))
 
     def ensure_unite(self, code, intitule):
-        if not self.exists("SELECT 1 FROM UNITE WHERE CODE_UNITE = ?", (code,)):
+        if code and not self.exists("SELECT 1 FROM UNITE WHERE CODE_UNITE = ?", (code,)):
             self.cur.execute(
                 "INSERT INTO UNITE (CODE_UNITE, INTITULE, FACTEUR) VALUES (?, ?, 1)",
                 (code, intitule[:30]))
 
-    def ensure_tiers(self, code, raison):
+    def ensure_tiers(self, code, raison, categ=None):
+        """Cree le tiers s'il manque. 'categ' = 'F' (fournisseur) ou 'D' (depot)."""
         if code and not self.exists("SELECT 1 FROM TIERS WHERE CODE_TIERS = ?", (code,)):
             self.cur.execute(
-                "INSERT INTO TIERS (CODE_TIERS, RAISON_SOCIALE, DATE_CREATION) "
-                "VALUES (?, ?, ?)",
-                (code, (raison or code)[:200], datetime.datetime.now()))
+                "INSERT INTO TIERS (CODE_TIERS, RAISON_SOCIALE, CATEGS, DATE_CREATION) "
+                "VALUES (?, ?, ?, ?)",
+                (code, (raison or code)[:200], categ, datetime.datetime.now()))
 
     def resolve_famille(self, label):
         """Associe le libelle 'Famille' de l'Excel a un code famille existant,
@@ -278,50 +327,55 @@ class Importer:
         prix_achat_ttc = (round(prix_achat_ht * (1 + tva / 100.0), 4)
                           if cfg.get("calc_prix_achat_ttc") else None)
 
-        # Code-barres : colonne de l'Excel si presente, sinon la reference
-        # article (pour scanner directement sans ressaisie).
+        # Code-barres : le logiciel utilise la REFERENCE comme code scanne et
+        # laisse CODE_BARRES vide (index UNIQUE). On ne le renseigne donc que
+        # si l'Excel fournit une colonne code-barres distincte, ou si
+        # barcode_depuis_ref est explicitement active.
         barcode = line.get("code_barres") or ""
         if not barcode and cfg.get("barcode_depuis_ref"):
             barcode = ref
         code_barres = barcode[:60] or None        # CODE_BARRES VARCHAR(60)
         code_barre = (barcode[:35] or None) if barcode else None  # CODE_BARRE VARCHAR(35)
 
+        # Unite de base : vide par defaut (comme le logiciel)
+        unite = cfg.get("default_unite") or None
+
         self.cur.execute(
             "INSERT INTO ARTICLE "
             "(REF_ART, CODEFAMILLE, DESIGNATION, CODE_BARRES, CODE_BARRE, "
             " PRIXACHATHT, PRIXACHATTTC, PRIXVENTEHT, PRIXVENTETTC, TAUX_TVA, "
-            " CODE_UNITE_BASE, CODE_UNITE_AC, CODE_UNITE_VE, EN_SOMMEIL, DATE_CREATION) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, 0, ?)",
+            " CODE_UNITE_BASE, CODE_UNITE_AC, CODE_UNITE_VE, DATE_CREATION) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)",
             (ref, codefamille, line["designation"][:100], code_barres, code_barre,
              prix_achat_ht, prix_achat_ttc, tva,
-             cfg["default_unite"], cfg["default_unite"], cfg["default_unite"],
-             datetime.datetime.now()))
+             unite, unite, unite, datetime.datetime.now()))
         return "created"
 
     # -- piece + lignes ---------------------------------------------------
-    def create_piece(self, date_piece):
+    def create_piece(self, nopiece, date_piece):
         cfg = self.cfg
-        nopiece = self.gen_id("NEXTPIECE")
         self.cur.execute(
             "INSERT INTO PIECE "
             "(NOPIECE, CODE_TYPE_PIECE, CODE_TIERS, CODE_DEPOT, DATEPIECE, "
-            " ETAT, ANNULEE, COEFF, COEFF_TR, MONTANT, MONTANTHT, MONTANTTTC, TVA) "
-            "VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, 0, 0, 0, 0)",
+            " ETAT, ANNULEE, COEFF, COEFF_TR, MONTANT, MONTANTHT, MONTANTTTC, TVA, "
+            " USERNAME) "
+            "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 0, 0, 0, 0, ?)",
             (nopiece, cfg["code_type_piece"],
              cfg["code_tiers"] or None, cfg["code_depot"] or None,
-             date_piece, cfg["etat"]))
+             date_piece, cfg.get("etat") or None,
+             self.coeff_piece, self.coeff_piece_tr, cfg.get("user")))
         return nopiece
 
-    def add_item(self, nopiece, line, date_piece):
+    def add_item(self, noitem, nopiece, line, date_piece):
         cfg = self.cfg
-        noitem = self.gen_id("NEXTITEM")
+        unite = cfg.get("default_unite") or None
         self.cur.execute(
             "INSERT INTO ITEM "
             "(NOITEM, NOPIECE, REF_ART, QTE, PRIXHT, TVA, COEFF, COEFF_TR, "
             " CODE_UNITE, CODE_TIERS, CODE_DEPOT, DATEPIECE) "
-            "VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (noitem, nopiece, line["ref_art"], line["qte"], line["prix"],
-             line["tva"], cfg["default_unite"],
+             line["tva"], self.coeff_item, self.coeff_item_tr, unite,
              cfg["code_tiers"] or None, cfg["code_depot"] or None, date_piece))
         return noitem
 
@@ -391,21 +445,26 @@ def main():
     con = connect(cfg)
     imp = Importer(con, cfg)
     try:
-        # referentiels minimaux
+        # referentiels minimaux  (PIECE.USERNAME = utilisateur de connexion)
         imp.ensure_famille(cfg["default_famille"], cfg["default_famille_intitule"])
-        imp.ensure_unite(cfg["default_unite"], cfg["default_unite_intitule"])
+        imp.ensure_unite(cfg.get("default_unite"), cfg["default_unite_intitule"])
         if cfg.get("create_missing_tiers"):
-            imp.ensure_tiers(cfg.get("code_tiers"), cfg.get("raison_sociale"))
-            imp.ensure_tiers(cfg.get("code_depot"), cfg.get("code_depot"))
+            imp.ensure_tiers(cfg.get("code_tiers"), cfg.get("raison_sociale"), "F")
+            imp.ensure_tiers(cfg.get("code_depot"), cfg.get("code_depot"), "D")
 
-        nopiece = imp.create_piece(date_piece)
+        # numerotation collision-safe (MAX existant ou generateur)
+        nopiece = str(imp.next_base("NEXTPIECE", "PIECE", "NOPIECE") + 1)
+        item_no = imp.next_base("NEXTITEM", "ITEM", "NOITEM")
+
+        imp.create_piece(nopiece, date_piece)
 
         created, existing = [], []
         montant_ht = tva_tot = 0.0
         for line in lines:
             state = imp.upsert_article(line)
             (created if state == "created" else existing).append(line["ref_art"])
-            imp.add_item(nopiece, line, date_piece)
+            item_no += 1
+            imp.add_item(str(item_no), nopiece, line, date_piece)
             ht = line["qte"] * line["prix"]
             montant_ht += ht
             tva_tot += ht * line["tva"] / 100.0
@@ -413,6 +472,9 @@ def main():
         montant_ttc = montant_ht + tva_tot
         imp.update_totaux(nopiece, round(montant_ht, 4),
                           round(tva_tot, 4), round(montant_ttc, 4))
+        # tenir les generateurs a jour (au cas ou l'appli les utilise)
+        imp.advance_generator("NEXTPIECE", int(nopiece))
+        imp.advance_generator("NEXTITEM", item_no)
         ref_piece = imp.get_ref_piece(nopiece)
 
         # 3) Resume

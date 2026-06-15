@@ -9,21 +9,23 @@
   "fb_client_library": null,
 
   "code_type_piece": "PC_AC_B",
-  "etat": "VA",
+  "etat": null,
 
   "code_tiers": "",
   "raison_sociale": "",
   "code_depot": "",
   "create_missing_tiers": true,
 
-  "default_famille": "DIVERS",
-  "default_famille_intitule": "Divers",
-  "default_unite": "U",
+  "default_famille": "TOUS",
+  "default_famille_intitule": "Tous",
+  "default_unite": "",
   "default_unite_intitule": "Unite",
-  "default_tva": 19,
+  "default_tva": 0,
   "match_famille_par_intitule": true,
   "calc_prix_achat_ttc": true,
 
-  "barcode_depuis_ref": true,
+  "reserved_id_threshold": 1000000,
+
+  "barcode_depuis_ref": false,
   "colonne_prix": "prix"
 }
