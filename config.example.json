@@ -1,0 +1,29 @@
+{
+  "host": "localhost",
+  "port": 3050,
+  "database": "C:\\PRIME\\PR22.FDB",
+  "user": "SYSDBA",
+  "password": "masterkey",
+  "charset": "WIN1252",
+
+  "fb_client_library": null,
+
+  "code_type_piece": "PC_AC_B",
+  "etat": "VA",
+
+  "code_tiers": "",
+  "raison_sociale": "",
+  "code_depot": "",
+  "create_missing_tiers": true,
+
+  "default_famille": "DIVERS",
+  "default_famille_intitule": "Divers",
+  "default_unite": "U",
+  "default_unite_intitule": "Unite",
+  "default_tva": 19,
+  "match_famille_par_intitule": true,
+  "calc_prix_achat_ttc": true,
+
+  "barcode_depuis_ref": true,
+  "colonne_prix": "prix"
+}
