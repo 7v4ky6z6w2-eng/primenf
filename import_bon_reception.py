@@ -62,7 +62,10 @@ DEFAULT_CONFIG = {
     "database": "C:\\\\PRIME\\\\PR22.FDB",  # chemin du fichier .FDB
     "user": "SYSDBA",
     "password": "masterkey",
-    "charset": "WIN1252",           # la base est en charset NONE (octets bruts)
+    # Charset de connexion (base en charset NONE = octets bruts). Le logiciel
+    # ecrit selon la page de code ANSI de Windows : WIN1256 pour l'arabe (+
+    # francais accentue en minuscules), WIN1252 pour le francais seul.
+    "charset": "WIN1256",
 
     # --- Type de piece -------------------------------------------------------
     "code_type_piece": "PC_AC_B",   # PC_AC_B = "Bons de reception"
@@ -89,7 +92,7 @@ DEFAULT_CONFIG = {
     "arrondi_paliers": [[200, 5], [1000, 10], [None, 50]],
     "match_famille_par_intitule": True,  # associer la colonne "Famille" a une famille existante
     "create_missing_familles": True,     # creer la famille (par son NOM) si aucune ne correspond
-    "calc_prix_achat_ttc": True,    # renseigner aussi PRIXACHATTTC (= HT * (1+TVA/100))
+    "calc_prix_achat_ttc": True,    # renseigner PRIXACHATTTC (= PRIXACHATHT, identiques)
 
     # --- Numerotation NOPIECE / NOITEM --------------------------------------
     # Le logiciel numerote en MAX(NOPIECE)+1 (le generateur peut etre obsolete).
@@ -422,8 +425,8 @@ class Importer:
         codefamille = self.resolve_famille(line["famille"])
         prix_achat_ht = line["prix"]              # prix de vente fournisseur = notre prix d'achat
         tva = line["tva"]
-        prix_achat_ttc = (round(prix_achat_ht * (1 + tva / 100.0), 4)
-                          if cfg.get("calc_prix_achat_ttc") else None)
+        # Prix d'achat TTC = HT (identiques). Renseigne par defaut.
+        prix_achat_ttc = prix_achat_ht if cfg.get("calc_prix_achat_ttc", True) else None
 
         # Prix de vente automatique = prix achat + marge, arrondi vers le haut.
         # Laisse vide si desactive (vous fixez le prix vous-meme).
@@ -509,7 +512,7 @@ def connect(cfg):
     if lib:
         fdb.load_api(lib)
     kwargs = dict(database=cfg["database"], user=cfg["user"],
-                  password=cfg["password"], charset=cfg.get("charset", "WIN1252"))
+                  password=cfg["password"], charset=cfg.get("charset", "WIN1256"))
     host = cfg.get("host")
     if host:
         kwargs["host"] = host

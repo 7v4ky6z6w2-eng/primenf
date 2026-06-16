@@ -39,7 +39,7 @@ import tempfile
 import traceback
 
 SCRIPT_NAME = "import_bon_reception.py"
-CHARSETS = ["WIN1252", "ISO8859_1", "UTF8", "NONE", "DOS850"]
+CHARSETS = ["WIN1256", "WIN1252", "ISO8859_1", "UTF8", "NONE", "DOS850"]
 ORG, APP = "PrimeOffice", "ImportBonReception"
 
 try:

@@ -4,7 +4,7 @@
   "database": "C:\\PRIME\\PR22.FDB",
   "user": "SYSDBA",
   "password": "masterkey",
-  "charset": "WIN1252",
+  "charset": "WIN1256",
 
   "fb_client_library": null,
 

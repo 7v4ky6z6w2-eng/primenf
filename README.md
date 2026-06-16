@@ -77,6 +77,7 @@ Copiez `config.example.json` en `config.json` et adaptez :
   "code_tiers": "F001",          // code fournisseur (optionnel)
   "raison_sociale": "Mon Fournisseur",
   "code_depot": "",              // code dépôt (optionnel)
+  "charset": "WIN1256",          // arabe + français (voir ci-dessous)
   "default_tva": 19              // TVA par défaut si absente de l'Excel
 }
 ```
@@ -116,6 +117,19 @@ Clés utiles :
   200–999 → au 10 supérieur, à partir de 1000 → au 50 supérieur.
 - `colonne_prix` : champ Excel utilisé comme prix d'achat (défaut `prix`,
   c.-à-d. la colonne `Prix HT`).
+- `charset` : page de code utilisée pour écrire le texte. La base est en
+  charset `NONE` (octets bruts) et le logiciel écrit selon la page ANSI de
+  Windows :
+  - **`WIN1256`** (défaut) : **arabe** + français accentué en **minuscules**
+    (é, è, à, ç…). C'est l'encodage réellement utilisé par le logiciel sur un
+    Windows arabe (vérifié sur la base : `لوحة الحجوم` est stocké à
+    l'identique). Recommandé si vos désignations contiennent de l'arabe.
+  - **`WIN1252`** : français seul (Europe de l'Ouest).
+  Les majuscules accentuées (É, Ç…) n'existent pas en `WIN1256` (ni dans le
+  logiciel) ; elles sont alors translittérées (É → E). Tout caractère absent
+  de la page de code est translittéré/neutralisé pour ne pas bloquer
+  l'écriture — plus de « ???? » à la place de l'arabe si le bon charset est
+  choisi.
 
 ## Format du fichier Excel
 
@@ -154,6 +168,28 @@ Faites toujours un `--dry-run` d'abord, et **sauvegardez votre base** avant le
 premier import réel. Chaque exécution crée **un nouveau** bon de réception :
 relancer le même fichier crée une seconde réception (le stock serait ajouté
 deux fois).
+
+## Nettoyer un import fait avec le mauvais charset
+
+Si un import a été fait avec un mauvais charset (arabe remplacé par des
+« ? »), `nettoyer_articles.py` retrouve les articles corrompus et les
+supprime avec toutes leurs lignes liées (ITEM, TARIF, etc.), pour pouvoir
+réimporter proprement avec `WIN1256`.
+
+```bash
+# Simulation (liste sans rien supprimer) :
+python nettoyer_articles.py --config config.json
+
+# Suppression (articles + lignes liées) :
+python nettoyer_articles.py --config config.json --apply
+
+# + supprimer les bons devenus vides et les familles « ? » sans article :
+python nettoyer_articles.py --config config.json --apply --purge-pieces --purge-familles
+```
+
+Fait toujours une **simulation** d'abord et **sauvegardez la base**. Le motif
+recherché (`--motif`, défaut `?`) ne supprime que les désignations qui le
+contiennent — vérifiez la liste affichée avant `--apply`.
 
 ## Interface graphique (optionnelle)
 
