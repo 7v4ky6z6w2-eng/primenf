@@ -24,7 +24,7 @@
 
   "prix_vente_auto": true,
   "marge_pct": 50,
-  "arrondi_paliers": [[200, 5], [null, 10]],
+  "arrondi_paliers": [[200, 5], [1000, 10], [null, 50]],
 
   "match_famille_par_intitule": true,
   "create_missing_familles": true,

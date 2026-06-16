@@ -18,10 +18,10 @@ Pour chaque ligne du fichier Excel :
      **vous** payez l'article.
    - **Prix de vente HT** calculé automatiquement = **prix d'achat + 50 %**
      (configurable via `marge_pct`), puis **arrondi vers le haut** par paliers :
-     **< 200 → au 5 supérieur** (72 → 75, 163 → 165) ; **≥ 200 → au 10
-     supérieur** (278 → 280, 432 → 440). Paliers réglables via
-     `arrondi_paliers`. Mettez `prix_vente_auto: false` pour laisser le prix
-     de vente vide et le fixer vous-même.
+     **< 200 → au 5 supérieur** (72 → 75, 163 → 165) ; **200–999 → au 10
+     supérieur** (278 → 280, 432 → 440) ; **≥ 1000 → au 50 supérieur**
+     (1334 → 1350). Paliers réglables via `arrondi_paliers`. Mettez
+     `prix_vente_auto: false` pour laisser le prix de vente vide.
    - **Code-barres** : c'est la **référence article** (`Ref. Art.`) qui sert
      de code scanné — comme dans le logiciel, où le champ `CODE_BARRES` reste
      vide (et porte un index unique). Scanner le code-barres retrouve donc
@@ -112,9 +112,8 @@ Clés utiles :
 - `marge_pct` : marge ajoutée au prix d'achat (`50` = +50 %).
 - `arrondi_paliers` : arrondi **vers le haut** par paliers, sous forme de
   liste `[seuil_max, pas]` (`null` = au-delà). Défaut
-  `[[200, 5], [null, 10]]` : sous 200 → au 5 supérieur, à partir de 200 → au
-  10 supérieur. Exemple pour arrondir les milliers au 50 supérieur :
-  `[[200, 5], [1000, 10], [null, 50]]`.
+  `[[200, 5], [1000, 10], [null, 50]]` : sous 200 → au 5 supérieur,
+  200–999 → au 10 supérieur, à partir de 1000 → au 50 supérieur.
 - `colonne_prix` : champ Excel utilisé comme prix d'achat (défaut `prix`,
   c.-à-d. la colonne `Prix HT`).
 

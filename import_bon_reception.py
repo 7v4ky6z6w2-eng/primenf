@@ -85,8 +85,8 @@ DEFAULT_CONFIG = {
     "prix_vente_auto": True,        # calculer un prix de vente = prix achat + marge
     "marge_pct": 50,                # marge appliquee au prix d'achat (50 = +50%)
     # Arrondi VERS LE HAUT par paliers : [seuil_max, pas]. null = au-dela.
-    #   < 200  -> arrondi au 5 superieur ; >= 200 -> arrondi au 10 superieur.
-    "arrondi_paliers": [[200, 5], [None, 10]],
+    #   < 200 -> au 5 superieur ; 200-999 -> au 10 superieur ; >= 1000 -> au 50 superieur.
+    "arrondi_paliers": [[200, 5], [1000, 10], [None, 50]],
     "match_famille_par_intitule": True,  # associer la colonne "Famille" a une famille existante
     "create_missing_familles": True,     # creer la famille (par son NOM) si aucune ne correspond
     "calc_prix_achat_ttc": True,    # renseigner aussi PRIXACHATTTC (= HT * (1+TVA/100))
@@ -145,6 +145,41 @@ def to_float(v, default=0.0):
         return float(txt)
     except ValueError:
         return default
+
+
+# Correspondance charset Firebird -> codec Python (pour assainir le texte).
+_CHARSET_CODEC = {
+    "WIN1252": "cp1252", "WIN1256": "cp1256", "WIN1250": "cp1250",
+    "ISO8859_1": "latin-1", "ISO8859_15": "iso8859-15",
+    "UTF8": "utf-8", "UNICODE_FSS": "utf-8", "ASCII": "ascii", "NONE": "cp1252",
+}
+
+
+def codec_for(charset):
+    return _CHARSET_CODEC.get((charset or "WIN1252").upper(), "cp1252")
+
+
+def safe_text(s, codec):
+    """Rend une chaine ecrivable dans le charset de la base.
+    Conserve les accents (presents dans le charset) et ne remplace que les
+    caracteres impossibles a encoder (translitteration ASCII, sinon '?'),
+    afin d'eviter l'echec total de l'ecriture (probleme d'encodage)."""
+    if s is None:
+        return None
+    s = str(s)
+    try:
+        s.encode(codec)
+        return s
+    except (UnicodeEncodeError, LookupError):
+        out = []
+        for ch in s:
+            try:
+                ch.encode(codec)
+                out.append(ch)
+            except UnicodeEncodeError:
+                repl = unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode("ascii")
+                out.append(repl if repl else "?")
+        return "".join(out)
 
 
 def round_price_up(value, tiers):
@@ -218,26 +253,28 @@ def read_excel(path, cfg):
             "Colonne de prix introuvable dans l'Excel (cherche : %s)."
             % ", ".join(aliases.get(price_field, [price_field])))
 
+    codec = codec_for(cfg.get("charset"))
+    txt = lambda v: safe_text(v, codec)
     lines = []
     for row in ws.iter_rows(min_row=hrow + 1, values_only=True):
         ref = row[colmap["ref_art"]] if colmap.get("ref_art") is not None else None
         if ref is None or str(ref).strip() == "":
             continue
         line = {
-            "ref_art":     str(ref).strip(),
-            "designation": (str(row[colmap["designation"]]).strip()
-                            if "designation" in colmap and row[colmap["designation"]] is not None
-                            else str(ref).strip()),
+            "ref_art":     txt(str(ref).strip()),
+            "designation": txt(str(row[colmap["designation"]]).strip()
+                               if "designation" in colmap and row[colmap["designation"]] is not None
+                               else str(ref).strip()),
             "qte":   to_float(row[colmap["qte"]], 0.0),
             "prix":  to_float(row[colmap[price_field]], 0.0),
             "tva":   (to_float(row[colmap["tva"]], cfg["default_tva"])
                       if "tva" in colmap else cfg["default_tva"]),
-            "famille": (str(row[colmap["famille"]]).strip()
-                        if "famille" in colmap and row[colmap["famille"]] is not None
-                        else ""),
-            "code_barres": (str(row[colmap["code_barres"]]).strip()
-                            if "code_barres" in colmap and row[colmap["code_barres"]] is not None
-                            else ""),
+            "famille": txt(str(row[colmap["famille"]]).strip()
+                           if "famille" in colmap and row[colmap["famille"]] is not None
+                           else ""),
+            "code_barres": txt(str(row[colmap["code_barres"]]).strip()
+                               if "code_barres" in colmap and row[colmap["code_barres"]] is not None
+                               else ""),
         }
         lines.append(line)
     return lines
@@ -253,6 +290,7 @@ class Importer:
         self.cur = con.cursor()
         self._famille_cache = None
         self._fam_code_next = None
+        self.codec = codec_for(cfg.get("charset"))
         # coefficients reels du type de piece (PIECE et ITEM)
         self.coeff_piece, self.coeff_piece_tr, \
             self.coeff_item, self.coeff_item_tr = self._load_type_coeffs()
@@ -306,13 +344,13 @@ class Importer:
         if not self.exists("SELECT 1 FROM FAMILLE WHERE CODEFAMILLE = ?", (code,)):
             self.cur.execute(
                 "INSERT INTO FAMILLE (CODEFAMILLE, INTITULE, TAUX_TVA) VALUES (?, ?, ?)",
-                (code, intitule[:50], self.cfg["default_tva"]))
+                (code, safe_text(intitule, self.codec)[:50], self.cfg["default_tva"]))
 
     def ensure_unite(self, code, intitule):
         if code and not self.exists("SELECT 1 FROM UNITE WHERE CODE_UNITE = ?", (code,)):
             self.cur.execute(
                 "INSERT INTO UNITE (CODE_UNITE, INTITULE, FACTEUR) VALUES (?, ?, 1)",
-                (code, intitule[:30]))
+                (code, safe_text(intitule, self.codec)[:30]))
 
     def ensure_tiers(self, code, raison, categ=None):
         """Cree le tiers s'il manque. 'categ' = 'F' (fournisseur) ou 'D' (depot)."""
@@ -320,7 +358,8 @@ class Importer:
             self.cur.execute(
                 "INSERT INTO TIERS (CODE_TIERS, RAISON_SOCIALE, CATEGS, DATE_CREATION) "
                 "VALUES (?, ?, ?, ?)",
-                (code, (raison or code)[:200], categ, datetime.datetime.now()))
+                (code, safe_text(raison or code, self.codec)[:200], categ,
+                 datetime.datetime.now()))
 
     def _load_famille_cache(self):
         if self._famille_cache is None:
@@ -350,7 +389,7 @@ class Importer:
         self.cur.execute(
             "INSERT INTO FAMILLE (CODEFAMILLE, CODEFAMILLE_M, INTITULE, TAUX_TVA) "
             "VALUES (?, ?, ?, ?)",
-            (code, parent, label[:50], cfg["default_tva"]))
+            (code, parent, safe_text(label, self.codec)[:50], cfg["default_tva"]))
         self._famille_cache[norm(label)] = code     # eviter les doublons
         return code
 
@@ -392,7 +431,7 @@ class Importer:
         if cfg.get("prix_vente_auto"):
             brut = prix_achat_ht * (1 + cfg.get("marge_pct", 50) / 100.0)
             prix_vente_ht = round_price_up(brut, cfg.get("arrondi_paliers",
-                                                          [[200, 5], [None, 10]]))
+                                                          [[200, 5], [1000, 10], [None, 50]]))
             prix_vente_ttc = (round(prix_vente_ht * (1 + tva / 100.0), 4)
                               if prix_vente_ht is not None else None)
 
@@ -565,9 +604,18 @@ def main():
         else:
             con.commit()
             print("\nImport termine et enregistre (commit).")
-    except Exception:
+    except Exception as exc:
         con.rollback()
-        raise
+        msg = str(exc)
+        print("\nECHEC : aucune ecriture (transaction annulee).", file=sys.stderr)
+        print("Detail : %s" % msg, file=sys.stderr)
+        if ("transliterate" in msg.lower() or "encod" in msg.lower()
+                or "malformed" in msg.lower() or "character set" in msg.lower()):
+            print("-> Probleme d'encodage. Le texte est pourtant assaini vers le "
+                  "charset configure (%s). Verifiez la cle \"charset\" du config "
+                  "(WIN1252 recommande pour ces bases ; sinon NONE)."
+                  % cfg.get("charset"), file=sys.stderr)
+        sys.exit(1)
     finally:
         con.close()
 
