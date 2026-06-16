@@ -47,6 +47,42 @@ try:
 except NameError:  # pragma: no cover
     GUI_SCRIPT = os.path.abspath(sys.argv[0])
 
+DEFAULT_ARRONDI = [[200, 5], [1000, 10], [None, 50]]
+
+
+def parse_arrondi(text):
+    """\"200:5, 1000:10, *:50\"  ->  [[200,5],[1000,10],[None,50]]"""
+    tiers = []
+    for part in (text or "").split(","):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        seuil, pas = (x.strip() for x in part.split(":", 1))
+        try:
+            s = None if seuil in ("*", "", "null", "none") else int(float(seuil))
+            p = float(pas)
+            p = int(p) if p == int(p) else p
+        except ValueError:
+            continue
+        tiers.append([s, p])
+    return tiers or [list(t) for t in DEFAULT_ARRONDI]
+
+
+def format_arrondi(tiers):
+    """[[200,5],[1000,10],[None,50]]  ->  \"200:5, 1000:10, *:50\""""
+    if isinstance(tiers, str):
+        return tiers
+    parts = []
+    for t in tiers or []:
+        try:
+            seuil, pas = t[0], t[1]
+        except (IndexError, TypeError):
+            continue
+        s = "*" if seuil is None else str(seuil)
+        p = str(int(pas)) if float(pas) == int(pas) else str(pas)
+        parts.append("%s:%s" % (s, p))
+    return ", ".join(parts)
+
 
 # --------------------------------------------------------------------------- #
 #  Localisation / chargement de l'outil d'origine
@@ -236,6 +272,14 @@ def _window_class():
             self.f_barcode_ref = QCheckBox("Recopier la reference dans CODE_BARRES")
             self.f_reserved = QSpinBox(); self.f_reserved.setRange(0, 2_000_000_000); self.f_reserved.setValue(1_000_000)
 
+            # --- prix de vente automatique ---
+            self.f_prix_vente_auto = QCheckBox("Calculer un prix de vente automatique (nouveaux articles)")
+            self.f_prix_vente_auto.setChecked(True)
+            self.f_marge = QDoubleSpinBox(); self.f_marge.setRange(0, 1000); self.f_marge.setDecimals(2)
+            self.f_marge.setValue(50); self.f_marge.setSuffix(" %")
+            self.f_arrondi = QLineEdit("200:5, 1000:10, *:50")
+            self.f_arrondi.setPlaceholderText("seuil:pas, ... (ex. 200:5, 1000:10, *:50 ; * = au-dela)")
+
         # ---- assemblage ------------------------------------------------- #
         def _build_ui(self):
             root = QVBoxLayout(self)
@@ -378,6 +422,10 @@ def _window_class():
             f.addRow("Unite par defaut — nom", self.f_default_unite_int)
             f.addRow("", self.f_barcode_ref)
             f.addRow("Seuil ID reserves", self.f_reserved)
+            f.addRow(QLabel("<b>Prix de vente</b>"))
+            f.addRow("", self.f_prix_vente_auto)
+            f.addRow("Marge", self.f_marge)
+            f.addRow("Arrondi (seuil:pas)", self.f_arrondi)
             return w
 
         def _build_summary_widget(self):
@@ -409,10 +457,17 @@ def _window_class():
                 self.f_database.setText(str(dc["database"]).replace("\\\\", "\\"))
             self.f_user.setText(dc.get("user", "SYSDBA"))
             self.f_password.setText(dc.get("password", "masterkey"))
-            cs = dc.get("charset", "WIN1252")
+            cs = dc.get("charset", "WIN1256")
             if cs and self.f_charset.findText(cs) < 0:
                 self.f_charset.insertItem(0, cs)
             self.f_charset.setCurrentText(cs)
+            if "prix_vente_auto" in dc:
+                self.f_prix_vente_auto.setChecked(bool(dc["prix_vente_auto"]))
+            if "marge_pct" in dc:
+                try: self.f_marge.setValue(float(dc["marge_pct"]))
+                except (TypeError, ValueError): pass
+            if dc.get("arrondi_paliers"):
+                self.f_arrondi.setText(format_arrondi(dc["arrondi_paliers"]))
 
         def _settings(self):
             return QSettings(ORG, APP)
@@ -427,11 +482,18 @@ def _window_class():
                         cfg[k] = val
                 for b in ("create_missing_tiers", "match_famille_par_intitule",
                           "create_missing_familles", "calc_prix_achat_ttc",
-                          "barcode_depuis_ref"):
+                          "barcode_depuis_ref", "prix_vente_auto"):
                     v = s.value(b)
                     if v is not None:
                         cfg[b] = str(v).lower() in ("true", "1")
                 self._apply_config_dict(cfg)
+                mv = s.value("marge_pct")
+                if mv is not None:
+                    try: self.f_marge.setValue(float(mv))
+                    except (TypeError, ValueError): pass
+                at = s.value("arrondi_paliers_text")
+                if at:
+                    self.f_arrondi.setText(str(at))
             last_excel = s.value("last_excel")
             if last_excel and os.path.isfile(last_excel):
                 self.excel_edit.setText(last_excel)
@@ -443,8 +505,10 @@ def _window_class():
                 s.setValue(k, cfg.get(k, ""))
             for b in ("create_missing_tiers", "match_famille_par_intitule",
                       "create_missing_familles", "calc_prix_achat_ttc",
-                      "barcode_depuis_ref"):
+                      "barcode_depuis_ref", "prix_vente_auto"):
                 s.setValue(b, bool(cfg.get(b)))
+            s.setValue("marge_pct", float(cfg.get("marge_pct", 50)))
+            s.setValue("arrondi_paliers_text", self.f_arrondi.text())
             if self.excel_edit.text().strip():
                 s.setValue("last_excel", self.excel_edit.text().strip())
 
@@ -557,6 +621,9 @@ def _window_class():
                 "reserved_id_threshold": int(self.f_reserved.value()),
                 "barcode_depuis_ref": self.f_barcode_ref.isChecked(),
                 "colonne_prix": self.f_colonne_prix.currentText().strip() or "prix",
+                "prix_vente_auto": self.f_prix_vente_auto.isChecked(),
+                "marge_pct": float(self.f_marge.value()),
+                "arrondi_paliers": parse_arrondi(self.f_arrondi.text()),
             }
 
         def _apply_config_dict(self, cfg):
@@ -591,6 +658,12 @@ def _window_class():
                 except (TypeError, ValueError): pass
             if "barcode_depuis_ref" in cfg: self.f_barcode_ref.setChecked(bool(cfg["barcode_depuis_ref"]))
             if "colonne_prix" in cfg: self.f_colonne_prix.setCurrentText(str(cfg["colonne_prix"]))
+            if "prix_vente_auto" in cfg: self.f_prix_vente_auto.setChecked(bool(cfg["prix_vente_auto"]))
+            if "marge_pct" in cfg:
+                try: self.f_marge.setValue(float(cfg["marge_pct"]))
+                except (TypeError, ValueError): pass
+            if cfg.get("arrondi_paliers"):
+                self.f_arrondi.setText(format_arrondi(cfg["arrondi_paliers"]))
 
         # ---- test connexion -------------------------------------------- #
         def test_connection(self):
