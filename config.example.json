@@ -21,6 +21,11 @@
   "default_unite": "",
   "default_unite_intitule": "Unite",
   "default_tva": 0,
+
+  "prix_vente_auto": true,
+  "marge_pct": 50,
+  "arrondi_paliers": [[200, 5], [null, 10]],
+
   "match_famille_par_intitule": true,
   "create_missing_familles": true,
   "calc_prix_achat_ttc": true,

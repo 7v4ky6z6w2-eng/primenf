@@ -16,8 +16,12 @@ Pour chaque ligne du fichier Excel :
    - **Prix d'achat HT** = le prix indiqué sur l'Excel du fournisseur
      (colonne `Prix HT`). C'est le prix de vente du fournisseur, donc ce que
      **vous** payez l'article.
-   - **Prix de vente** laissé **VIDE** (`NULL`) — vous fixez vous-même votre
-     prix de vente ensuite dans le logiciel.
+   - **Prix de vente HT** calculé automatiquement = **prix d'achat + 50 %**
+     (configurable via `marge_pct`), puis **arrondi vers le haut** par paliers :
+     **< 200 → au 5 supérieur** (72 → 75, 163 → 165) ; **≥ 200 → au 10
+     supérieur** (278 → 280, 432 → 440). Paliers réglables via
+     `arrondi_paliers`. Mettez `prix_vente_auto: false` pour laisser le prix
+     de vente vide et le fixer vous-même.
    - **Code-barres** : c'est la **référence article** (`Ref. Art.`) qui sert
      de code scanné — comme dans le logiciel, où le champ `CODE_BARRES` reste
      vide (et porte un index unique). Scanner le code-barres retrouve donc
@@ -102,6 +106,15 @@ Clés utiles :
 - `reserved_id_threshold` : seuil au-dessus duquel les numéros de pièce sont
   considérés comme « plages réservées » (ex. `8000000` pour les inventaires)
   et ignorés dans le calcul du prochain `NOPIECE` (défaut `1000000`).
+- `prix_vente_auto` : si `true` (défaut), un **prix de vente** est calculé
+  pour les **nouveaux articles** (les articles existants ne sont jamais
+  modifiés). Mettez `false` pour laisser le prix de vente vide.
+- `marge_pct` : marge ajoutée au prix d'achat (`50` = +50 %).
+- `arrondi_paliers` : arrondi **vers le haut** par paliers, sous forme de
+  liste `[seuil_max, pas]` (`null` = au-delà). Défaut
+  `[[200, 5], [null, 10]]` : sous 200 → au 5 supérieur, à partir de 200 → au
+  10 supérieur. Exemple pour arrondir les milliers au 50 supérieur :
+  `[[200, 5], [1000, 10], [null, 50]]`.
 - `colonne_prix` : champ Excel utilisé comme prix d'achat (défaut `prix`,
   c.-à-d. la colonne `Prix HT`).
 

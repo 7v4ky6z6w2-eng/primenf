@@ -80,6 +80,13 @@ DEFAULT_CONFIG = {
     "default_unite": "",            # code unite de base ; "" = aucune (comme le logiciel)
     "default_unite_intitule": "Unite",
     "default_tva": 19,              # TVA par defaut si absente de l'Excel
+
+    # --- Prix de vente automatique (nouveaux articles seulement) ------------
+    "prix_vente_auto": True,        # calculer un prix de vente = prix achat + marge
+    "marge_pct": 50,                # marge appliquee au prix d'achat (50 = +50%)
+    # Arrondi VERS LE HAUT par paliers : [seuil_max, pas]. null = au-dela.
+    #   < 200  -> arrondi au 5 superieur ; >= 200 -> arrondi au 10 superieur.
+    "arrondi_paliers": [[200, 5], [None, 10]],
     "match_famille_par_intitule": True,  # associer la colonne "Famille" a une famille existante
     "create_missing_familles": True,     # creer la famille (par son NOM) si aucune ne correspond
     "calc_prix_achat_ttc": True,    # renseigner aussi PRIXACHATTTC (= HT * (1+TVA/100))
@@ -138,6 +145,19 @@ def to_float(v, default=0.0):
         return float(txt)
     except ValueError:
         return default
+
+
+def round_price_up(value, tiers):
+    """Arrondit un prix VERS LE HAUT par paliers selon sa grandeur.
+    'tiers' = liste de [seuil_max, pas] ; un seuil_max null/None = au-dela.
+    Ex. [[200, 5], [None, 10]] : < 200 -> au 5 superieur ; >= 200 -> au 10 superieur."""
+    import math
+    if value is None or value <= 0:
+        return value
+    for seuil, pas in tiers:
+        if seuil is None or value < seuil:
+            return int(math.ceil(value / pas) * pas)
+    return value
 
 
 def load_config(path):
@@ -366,6 +386,16 @@ class Importer:
         prix_achat_ttc = (round(prix_achat_ht * (1 + tva / 100.0), 4)
                           if cfg.get("calc_prix_achat_ttc") else None)
 
+        # Prix de vente automatique = prix achat + marge, arrondi vers le haut.
+        # Laisse vide si desactive (vous fixez le prix vous-meme).
+        prix_vente_ht = prix_vente_ttc = None
+        if cfg.get("prix_vente_auto"):
+            brut = prix_achat_ht * (1 + cfg.get("marge_pct", 50) / 100.0)
+            prix_vente_ht = round_price_up(brut, cfg.get("arrondi_paliers",
+                                                          [[200, 5], [None, 10]]))
+            prix_vente_ttc = (round(prix_vente_ht * (1 + tva / 100.0), 4)
+                              if prix_vente_ht is not None else None)
+
         # Code-barres : le logiciel utilise la REFERENCE comme code scanne et
         # laisse CODE_BARRES vide (index UNIQUE). On ne le renseigne donc que
         # si l'Excel fournit une colonne code-barres distincte, ou si
@@ -384,9 +414,9 @@ class Importer:
             "(REF_ART, CODEFAMILLE, DESIGNATION, CODE_BARRES, CODE_BARRE, "
             " PRIXACHATHT, PRIXACHATTTC, PRIXVENTEHT, PRIXVENTETTC, TAUX_TVA, "
             " CODE_UNITE_BASE, CODE_UNITE_AC, CODE_UNITE_VE, DATE_CREATION) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (ref, codefamille, line["designation"][:100], code_barres, code_barre,
-             prix_achat_ht, prix_achat_ttc, tva,
+             prix_achat_ht, prix_achat_ttc, prix_vente_ht, prix_vente_ttc, tva,
              unite, unite, unite, datetime.datetime.now()))
         return "created"
 
