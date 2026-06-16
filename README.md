@@ -154,3 +154,28 @@ Faites toujours un `--dry-run` d'abord, et **sauvegardez votre base** avant le
 premier import réel. Chaque exécution crée **un nouveau** bon de réception :
 relancer le même fichier crée une seconde réception (le stock serait ajouté
 deux fois).
+
+## Interface graphique (optionnelle)
+
+`import_bon_reception_gui.py` est une interface de bureau (PySide6) qui pilote
+l'outil ci-dessus : choisir le fichier Excel, la base et le fournisseur,
+**Aperçu (dry-run)** puis **Import réel** avec résumé. Elle ne réimplémente
+aucune logique : l'aperçu utilise `read_excel`, et l'exécution relance le
+`main()` de l'outil (comportement identique à la ligne de commande).
+
+```bash
+pip install -r requirements-gui.txt
+python import_bon_reception_gui.py
+```
+
+Empaquetage en exécutable Windows (`.exe`) avec PyInstaller :
+
+```bash
+pyinstaller --onefile --windowed --name ImportBonReception \
+    --add-data "import_bon_reception.py;." import_bon_reception_gui.py
+```
+
+> La GUI reprend les valeurs par défaut de l'outil (prix de vente +50 %,
+> arrondi, code-barres = référence…). Les options de prix de vente se règlent
+> dans `config.json` / l'outil ; gardez `import_bon_reception.py` dans le même
+> dossier que la GUI.
