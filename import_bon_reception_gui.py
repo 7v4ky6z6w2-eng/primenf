@@ -40,6 +40,7 @@ import traceback
 
 SCRIPT_NAME = "import_bon_reception.py"
 CLEAN_SCRIPT_NAME = "nettoyer_articles.py"
+REPAIR_SCRIPT_NAME = "reparer_encodage.py"
 CHARSETS = ["WIN1256", "WIN1252", "ISO8859_1", "UTF8", "NONE", "DOS850"]
 ORG, APP = "PrimeOffice", "ImportBonReception"
 
@@ -153,7 +154,7 @@ def friendly_error(raw):
          "Serveur Firebird injoignable : verifiez l'hote / le port, ou laissez "
          "l'hote vide pour un acces local au fichier."),
         (("malformed string", "transliteration", "charset"),
-         "Probleme d'encodage : essayez un autre charset (WIN1252 / NONE)."),
+         "Probleme d'encodage : pour l'arabe choisissez le charset WIN1256."),
         (("excel introuvable", "fichier excel"),
          "Fichier Excel introuvable."),
         (("ligne d'en-tete", "ref. art", "colonne obligatoire", "colonne de prix"),
@@ -195,32 +196,32 @@ def run_cli(argv):
         return 1
 
 
-def run_clean(argv):
-    """Execute nettoyer_articles.main() avec argv. L'outil d'origine est charge
-    sous le nom 'import_bon_reception' pour que le script de nettoyage puisse
-    l'importer (fonctionne en script ET en .exe gele)."""
-    clean_path = resolve_named_script(CLEAN_SCRIPT_NAME)
-    if not clean_path:
-        print("Script %s introuvable." % CLEAN_SCRIPT_NAME)
+def _run_helper_script(script_name, mod_name, argv):
+    """Charge un script auxiliaire (nettoyer/reparer) en lui rendant
+    'import_bon_reception' importable, puis appelle son main(argv).
+    Fonctionne en script ET en .exe gele."""
+    path = resolve_named_script(script_name)
+    if not path:
+        print("Script %s introuvable." % script_name)
         return 1
     tool, err = load_tool_module(resolve_script_path())
     if not tool:
         print(err)
         return 1
-    sys.modules["import_bon_reception"] = tool  # pour le 'from import_bon_reception import ...'
+    sys.modules["import_bon_reception"] = tool
     try:
-        spec = importlib.util.spec_from_file_location("nettoyer_articles", clean_path)
-        clean = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(clean)
+        spec = importlib.util.spec_from_file_location(mod_name, path)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
     except SystemExit as exc:
         print(str(exc.code or "Dependance manquante."))
         return 1
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         return 1
-    sys.argv = ["nettoyer_articles"] + list(argv)
+    sys.argv = [mod_name] + list(argv)
     try:
-        clean.main()
+        helper.main()
         return 0
     except SystemExit as exc:
         code = exc.code
@@ -231,6 +232,14 @@ def run_clean(argv):
     except Exception:  # noqa: BLE001
         traceback.print_exc()
         return 1
+
+
+def run_clean(argv):
+    return _run_helper_script(CLEAN_SCRIPT_NAME, "nettoyer_articles", argv)
+
+
+def run_repair(argv):
+    return _run_helper_script(REPAIR_SCRIPT_NAME, "reparer_encodage", argv)
 
 
 # --------------------------------------------------------------------------- #
@@ -399,6 +408,11 @@ def _window_class():
             for b in (self.btn_preview, self.btn_import):
                 b.setFont(bf); b.setMinimumHeight(38)
             self.btn_import.setStyleSheet("QPushButton { background:#7a1f1f; color:white; }")
+            self.btn_repair = QPushButton("Reparer l'arabe")
+            self.btn_repair.setToolTip(
+                "Corriger sur place les noms arabes deformes par un import en UTF8 "
+                "(re-encodage en WIN1256, sans toucher aux prix ni au stock).")
+            self.btn_repair.clicked.connect(self.run_repair_action)
             self.btn_clean = QPushButton("Nettoyer « ? »")
             self.btn_clean.setToolTip(
                 "Supprimer les articles corrompus (designation contenant « ? ») "
@@ -408,7 +422,8 @@ def _window_class():
             self.btn_cancel.clicked.connect(self.cancel_run)
             actions.addWidget(self.btn_preview); actions.addWidget(self.btn_import)
             actions.addStretch(1)
-            actions.addWidget(self.btn_clean); actions.addWidget(self.btn_cancel)
+            actions.addWidget(self.btn_repair); actions.addWidget(self.btn_clean)
+            actions.addWidget(self.btn_cancel)
             root.addLayout(actions)
 
             self.busy = QProgressBar(); self.busy.setRange(0, 1); self.busy.setValue(0)
@@ -798,6 +813,15 @@ def _window_class():
             if probs:
                 QMessageBox.warning(self, "A corriger", "\n".join("• " + x for x in probs)); return
             if not dry_run:
+                bad = self._charset_arabic_problem()
+                if bad:
+                    r = QMessageBox.warning(
+                        self, "Charset incorrect pour l'arabe",
+                        bad + "\n\nImporter quand meme (deconseille) ?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                        QMessageBox.StandardButton.No)
+                    if r != QMessageBox.StandardButton.Yes:
+                        return
                 ok = QMessageBox.question(
                     self, "Confirmer l'import reel",
                     "Cet import ECRIT en base (commit) et alimente le stock.\n\n"
@@ -840,6 +864,30 @@ def _window_class():
             self._set_running(True)
             self.status.setText("Apercu en cours…" if dry_run else "Import reel en cours…")
             self.proc.setProgram(program); self.proc.setArguments(args); self.proc.start()
+
+        def _charset_arabic_problem(self):
+            """Message si le fichier contient de l'arabe mais que le charset
+            choisi va le deformer ; '' sinon."""
+            path = self.excel_edit.text().strip()
+            if not path or not os.path.isfile(path) or not self.tool_mod:
+                return ""
+            try:
+                cfg = json.loads(json.dumps(getattr(self.tool_mod, "DEFAULT_CONFIG", {})))
+                cfg.update(self._build_config_dict()); cfg["charset"] = "UTF8"
+                lines = self.tool_mod.read_excel(path, cfg)
+            except Exception:  # noqa: BLE001
+                return ""
+            has_arabic = any(any(ord(c) >= 0x100 for c in (ln.get("designation") or ""))
+                             for ln in lines)
+            cs = self.f_charset.currentText().strip().upper()
+            if not has_arabic or cs == "WIN1256":
+                return ""
+            if cs in ("UTF8", "UNICODE_FSS"):
+                return ("Ce fichier contient de l'ARABE et le charset est « %s » : l'apercu "
+                        "affiche l'arabe, mais votre logiciel l'affichera DEFORME (lettres "
+                        "accentuees). Choisissez WIN1256." % cs)
+            return ("Ce fichier contient de l'ARABE mais le charset « %s » ne le gere pas "
+                    "(il deviendra « ? »). Choisissez WIN1256." % cs)
 
         @staticmethod
         def _q(a):
@@ -939,6 +987,71 @@ def _window_class():
             else:
                 self.status.setText("Nettoyage annule."); self._cleanup_tmp()
 
+        # ----- Reparation de l'encodage (import UTF-8 -> WIN1256) -----
+        def run_repair_action(self):
+            if self.proc is not None:
+                return
+            if not self.f_database.text().strip():
+                QMessageBox.warning(self, "A corriger", "Renseignez la base Firebird (.FDB)."); return
+            if not self.script_path:
+                QMessageBox.warning(self, "A corriger", "Outil import_bon_reception.py introuvable."); return
+            try:
+                fd, self.tmp_config_path = tempfile.mkstemp(suffix=".json", prefix="primenf_cfg_")
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(self._build_config_dict(), fh, indent=2, ensure_ascii=False)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.critical(self, "Erreur", "Config temporaire : %s" % exc); return
+            self.log.clear()
+            self._start_repair(apply=False)
+
+        def _start_repair(self, apply):
+            cli = ["--run-repair", "--config", self.tmp_config_path]
+            if apply:
+                cli += ["--apply"]
+            if getattr(sys, "frozen", False):
+                program, args = sys.executable, cli
+            else:
+                program, args = sys.executable, [GUI_SCRIPT] + cli
+            self.repair_apply = apply
+            self._append_log("$ %s\n" % " ".join(self._q(a) for a in [program] + args))
+            self.proc = QProcess(self)
+            self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            self.proc.readyReadStandardOutput.connect(self._on_output)
+            self.proc.finished.connect(self._on_repair_finished)
+            self.proc.errorOccurred.connect(self._on_proc_error)
+            self._set_running(True)
+            self.status.setText("Reparation : ecriture…" if apply else "Reparation : analyse…")
+            self.proc.setProgram(program); self.proc.setArguments(args); self.proc.start()
+
+        def _on_repair_finished(self, code, _st):
+            text = self.log.toPlainText()
+            self.proc = None
+            self._set_running(False)
+            if self.repair_apply:
+                self.status.setText("Reparation terminee (code 0)." if code == 0
+                                    else "Reparation : erreur (code %s) — voir Journal." % code)
+                self._cleanup_tmp()
+                return
+            if code != 0:
+                self.status.setText("Reparation : erreur (voir Journal)."); self._cleanup_tmp(); return
+            m = re.search(r"A_TRAITER:\s*(\d+)", text)
+            n = int(m.group(1)) if m else 0
+            if n == 0:
+                QMessageBox.information(self, "Reparation",
+                                        "Aucun texte arabe deforme (UTF-8) trouve.")
+                self.status.setText("Reparation : rien a corriger."); self._cleanup_tmp(); return
+            ok = QMessageBox.question(
+                self, "Confirmer la reparation",
+                "%d texte(s) arabe(s) deforme(s) detecte(s).\n\n"
+                "Les corriger sur place (ré-encodage en WIN1256) ? Les prix, le stock "
+                "et les bons ne sont PAS touches.\n\nSauvegardez la base au prealable." % n,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if ok == QMessageBox.StandardButton.Yes:
+                self._start_repair(apply=True)
+            else:
+                self.status.setText("Reparation annulee."); self._cleanup_tmp()
+
         def _cleanup_tmp(self):
             if self.tmp_config_path and os.path.isfile(self.tmp_config_path):
                 try: os.remove(self.tmp_config_path)
@@ -955,7 +1068,7 @@ def _window_class():
             if not running:
                 self.busy.setValue(0)
             for b in (self.btn_preview, self.btn_import, self.btn_test,
-                      self.btn_clean, self.adv):
+                      self.btn_clean, self.btn_repair, self.adv):
                 b.setEnabled(not running)
             self.btn_cancel.setEnabled(running)
 
@@ -1023,4 +1136,7 @@ if __name__ == "__main__":
     if "--run-clean" in sys.argv:
         rest = [a for a in sys.argv[1:] if a != "--run-clean"]
         sys.exit(run_clean(rest))
+    if "--run-repair" in sys.argv:
+        rest = [a for a in sys.argv[1:] if a != "--run-repair"]
+        sys.exit(run_repair(rest))
     sys.exit(main())

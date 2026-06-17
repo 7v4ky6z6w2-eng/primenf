@@ -169,6 +169,23 @@ premier import réel. Chaque exécution crée **un nouveau** bon de réception :
 relancer le même fichier crée une seconde réception (le stock serait ajouté
 deux fois).
 
+## Réparer un import fait en UTF8 (noms arabes déformés)
+
+Si un import a été fait avec le charset **UTF8**, l'arabe a été stocké en
+octets UTF-8 alors que le logiciel lit en **WIN1256** : les noms s'affichent
+en lettres accentuées illisibles (ex. `ظ„ظˆط­ط©`). `reparer_encodage.py`
+retrouve ces textes et les ré-écrit dans le bon encodage **sur place** —
+articles, prix, stock et bons **inchangés**, aucun re-import nécessaire.
+
+```bash
+python reparer_encodage.py --config config.json            # simulation
+python reparer_encodage.py --config config.json --apply    # réparation
+```
+
+Dans la GUI : bouton **« Réparer l'arabe »** (simulation → confirmation →
+correction). Répare `ARTICLE.DESIGNATION` et `FAMILLE.INTITULE` ; ne touche
+que les textes réellement en UTF-8 (les textes corrects ne sont pas modifiés).
+
 ## Nettoyer un import fait avec le mauvais charset
 
 Si un import a été fait avec un mauvais charset (arabe remplacé par des
@@ -203,10 +220,12 @@ Elle offre en plus :
 
 - une colonne **Prix vente** dans l'aperçu (marge + arrondi appliqués en direct) ;
 - les réglages **prix de vente** (marge, arrondi `seuil:pas`) directement à l'écran ;
-- un bouton **« Nettoyer ? »** qui lance `nettoyer_articles.py` (simulation puis
-  confirmation) pour supprimer les articles corrompus d'un ancien import ;
-- un **avertissement charset** : si l'arabe risque de devenir « ? » (WIN1252) ou
-  d'être déformé dans le logiciel (UTF8), l'aperçu le signale et conseille WIN1256.
+- un bouton **« Réparer l'arabe »** qui corrige sur place les noms déformés par
+  un import UTF8 (via `reparer_encodage.py`), et un bouton **« Nettoyer ? »**
+  qui supprime les articles « ? » d'un import WIN1252 (via `nettoyer_articles.py`) ;
+- un **garde-fou** : si le fichier contient de l'arabe et que le charset choisi
+  n'est pas WIN1256, l'aperçu l'affiche en rouge **et l'import réel demande
+  confirmation** (UTF8 → déformé dans le logiciel ; WIN1252 → « ? »).
 
 > **Arabe : choisissez le charset `WIN1256`.** En `UTF8`, l'aperçu affiche bien
 > l'arabe **mais l'import sera déformé** dans le logiciel (qui lit en WIN1256).
@@ -223,7 +242,8 @@ Empaquetage en exécutable Windows (`.exe`) avec PyInstaller :
 ```bash
 pyinstaller --onefile --windowed --name ImportBonReception \
     --add-data "import_bon_reception.py;." \
-    --add-data "nettoyer_articles.py;." import_bon_reception_gui.py
+    --add-data "nettoyer_articles.py;." \
+    --add-data "reparer_encodage.py;." import_bon_reception_gui.py
 ```
 
 > Gardez `import_bon_reception.py` et `nettoyer_articles.py` dans le même dossier
