@@ -246,5 +246,25 @@ pyinstaller --onefile --windowed --name ImportBonReception \
     --add-data "reparer_encodage.py;." import_bon_reception_gui.py
 ```
 
+Le plus simple : double-cliquez **`build_exe.bat`** (sur Windows, Python
+installé). L'exécutable est créé dans `dist\ImportBonReception.exe`.
+
+### Distribuer l'exe sur d'autres PC
+
+L'`.exe` (`--onefile`) embarque Python, PySide6 et les scripts : **un seul
+fichier à copier**. Sur chaque PC cible :
+
+- **Firebird requis pour la connexion** : `fdb` charge `fbclient.dll`. Les PC
+  qui font tourner le logiciel de gestion l'ont déjà. Sinon, copiez
+  `fbclient.dll` à côté de l'exe et indiquez son chemin dans le champ
+  *« Librairie cliente Firebird »* (ou `fb_client_library` du config).
+- **⚠ Même architecture (32/64 bits)** que `fbclient.dll` : un exe 64 bits ne
+  peut pas charger un `fbclient.dll` 32 bits. Firebird 2.5 est souvent
+  **32 bits** → construisez avec un **Python 32 bits**.
+- **Réglages par PC** : la GUI mémorise ses réglages (base, charset…) par
+  utilisateur. Configurez une fois par poste ; gardez **Charset = WIN1256**.
+- **Affichage de l'arabe** : cela dépend de Windows sur le PC (paramètres
+  régionaux système = arabe, « UTF-8 bêta » décoché), pas de l'exe.
+
 > Gardez `import_bon_reception.py` et `nettoyer_articles.py` dans le même dossier
 > que la GUI (ou bundlés via `--add-data`).
