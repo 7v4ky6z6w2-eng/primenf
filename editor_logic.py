@@ -50,7 +50,11 @@ class Cols:
 
     #: Colonnes que l'utilisateur peut modifier dans l'editeur.
     #: (FAMILLE = CODEFAMILLE : affectation/creation geree avec garde-fou FK)
-    EDITABLE = {REF, CODE_BARRES, CODE_BARRE, PV_HT, PV_TTC, FAMILLE}
+    EDITABLE = {REF, CODE_BARRES, CODE_BARRE, PV_HT, PV_TTC, TVA, FAMILLE}
+
+    #: Champs "prix de vente" qui doivent rester IDENTIQUES entre eux dans la
+    #: base PRIME (HT et TTC contiennent le meme prix de vente saisi).
+    PRICE_FIELDS = [PV_HT, PV_TTC]
 
     #: Table et colonnes du referentiel des familles (base PRIME).
     FAMILLE_TABLE = "FAMILLE"

@@ -1,7 +1,7 @@
 {
-  "host": "localhost",
+  "host": "",
   "port": 3050,
-  "database": "C:\\PRIME\\PR22.FDB",
+  "database": "C:/oransoft/netfact2/data/primeoffice2026.fdb",
   "user": "SYSDBA",
   "password": "masterkey",
   "charset": "WIN1252",

@@ -49,12 +49,43 @@ DEFAULT_CONFIG = {
 }
 
 
+def _loads_tolerant(text):
+    """json.loads, mais tolere les chemins Windows a simples antislashs.
+
+    Sous Windows on colle facilement "C:\\PRIME\\PR22.FDB" tel quel dans le
+    config.json, ce qui est un JSON invalide (\\P, \\b... ne sont pas des
+    echappements reconnus). On double alors les antislashs qui ne font pas
+    partie d'un echappement JSON valide, puis on reessaie.
+    """
+    import json as _json
+    import re
+    try:
+        return _json.loads(text)
+    except _json.JSONDecodeError:
+        # Double tout antislash qui ne forme pas un echappement JSON "structurel"
+        # (\\  \"  \/  \uXXXX). Dans un fichier de config de connexion, les
+        # valeurs sont des chemins Windows : un \n / \t y est un separateur de
+        # dossier litteral, pas un saut de ligne ou une tabulation.
+        fixed = re.sub(r'\\(?!["\\/]|u[0-9a-fA-F]{4})', r'\\\\', text)
+        return _json.loads(fixed)   # si ca echoue encore, l'erreur remonte
+
+
 def load_config(path):
     """Charge la config JSON (et complete avec les valeurs par defaut)."""
     cfg = dict(DEFAULT_CONFIG)
     if path and os.path.isfile(path):
         with open(path, "r", encoding="utf-8") as fh:
-            cfg.update(json.load(fh))
+            raw = fh.read()
+        try:
+            cfg.update(_loads_tolerant(raw))
+        except json.JSONDecodeError as exc:
+            raise DBError(
+                "Le fichier de configuration '%s' n'est pas un JSON valide "
+                "(ligne %d, colonne %d) : %s\n\n"
+                "Astuce : dans un chemin Windows, ecrivez les antislashs en "
+                "double (C:\\\\PRIME\\\\PR22.FDB) ou utilisez des slashs "
+                "(C:/PRIME/PR22.FDB)." % (path, exc.lineno, exc.colno, exc.msg)
+            ) from exc
     return cfg
 
 

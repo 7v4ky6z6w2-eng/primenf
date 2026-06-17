@@ -6,7 +6,8 @@ demandé :
 
 | Champ | Colonne(s) de la table `ARTICLE` |
 |-------|----------------------------------|
-| **Prix de vente** | `PRIXVENTEHT` / `PRIXVENTETTC` (recalcul HT⇄TTC automatique via `TAUX_TVA`) |
+| **Prix de vente** | `PRIXVENTEHT` **et** `PRIXVENTETTC` reçoivent la même valeur (la TVA n'est pas modifiée) |
+| **TVA** | `TAUX_TVA` (édition du taux en masse, indépendante du prix) |
 | **Référence article** | `REF_ART` (= le code scanné) |
 | **Code-barres** | `CODE_BARRES` (60) et `CODE_BARRE` (35) |
 | **Famille** | `CODEFAMILLE` — affectation **et création** d'une famille (code + nom) |
@@ -50,6 +51,24 @@ Copiez `config.example.json` en `config.json` et adaptez-le :
 
 * `host` vide (`""`) = accès **local direct** au fichier (Firebird Embedded).
 * `charset` : `WIN1252` comme dans votre import.
+* Les chemins Windows à **simples antislashs** (`C:\oransoft\...`) sont tolérés
+  automatiquement ; vous pouvez aussi utiliser des slashs (`C:/oransoft/...`).
+
+## Connexion (écran graphique)
+
+Vous **n'êtes pas obligé d'éditer le JSON à la main**. Au premier lancement (ou
+avec `--ask`, ou via le bouton **« Changer de base… »** de la barre d'outils),
+un **écran de connexion** s'ouvre :
+
+* bouton **Parcourir…** pour choisir le fichier `.FDB` ;
+* champs hôte / port / utilisateur / mot de passe / charset / table ;
+* bouton **« Tester la connexion »** qui se connecte réellement et affiche, en
+  vert ✓ le nombre d'articles et de familles trouvés, ou en rouge ✗ un message
+  d'erreur clair (base introuvable, identifiants, fbclient, encodage…) ;
+* bouton **« Se connecter »** (ouvre l'éditeur) ou **« Mode démo »**.
+
+Les paramètres qui fonctionnent sont mémorisés dans `config.json` pour les
+prochaines fois.
 
 ## Lancement
 
@@ -73,9 +92,13 @@ Astuce : commencez par `--demo` pour découvrir l'interface sans risque.
    * **Double-clic** sur une cellule (réf., code-barres, prix, famille) pour
      éditer une valeur unique.
    * **Opérations en masse** (bas de fenêtre) sur la sélection :
-     * **Prix de vente** : *Fixer*, *+/- %*, *+/- montant*, ou *Arrondir* —
-       sur le **HT** ou le **TTC** ; l'autre prix est recalculé via la TVA.
+     * **Prix de vente** : *Fixer*, *+/- %*, *+/- montant*, ou *Arrondir*.
        Arrondis commerciaux : `.99`, `.95`, `.90`, `0,50`, `0,10`, `0,05`, entier.
+       Dans la base PRIME, `PRIXVENTEHT` et `PRIXVENTETTC` contiennent **le même
+       prix de vente** : l'outil écrit donc la **même valeur** dans les deux et
+       **ne touche jamais au taux de TVA**.
+     * **TVA %** : *Fixer la TVA* applique un taux (`TAUX_TVA`) à la sélection,
+       indépendamment du prix.
      * **Code-barres** : *Fixer* une valeur, *Recopier la référence*, *Vider*.
      * **Référence** : chercher-remplacer (préfixe/suffixe possible).
      * **Famille** : *Affecter* une famille existante, ou *Créer & affecter*

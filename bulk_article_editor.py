@@ -48,7 +48,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from editor_logic import (Cols, PriceOp, TextOp, fmt_price, parse_number,
-                          ht_to_ttc, ttc_to_ht, encoded_len)
+                          encoded_len)
 import article_db
 from article_db import ArticleRepository, DemoRepository, DBError, load_config, save_config
 
@@ -57,68 +57,202 @@ APP_TITLE = "PRIME — Editeur en masse des articles"
 ROUND_CHOICES = [("(aucun)", None), (".99", "0.99"), (".95", "0.95"),
                  (".90", "0.90"), ("0,50", "0.50"), ("0,10", "0.10"),
                  ("0,05", "0.05"), ("entier", "1")]
+CHARSETS = ["WIN1252", "ISO8859_1", "ISO8859_15", "UTF8", "NONE", "DOS850"]
+
+
+def friendly_error(raw):
+    """Traduit les pannes Firebird courantes en francais lisible."""
+    t = (raw or "").lower()
+    rules = [
+        (("no module named 'fdb'", "module 'fdb'", "import fdb"),
+         "Le pilote Firebird « fdb » n'est pas installe (py -m pip install fdb)."),
+        (("fbclient", "client library", "load_api", "libfbclient",
+          "valid win32", "specified module", "dll load"),
+         "Librairie cliente Firebird introuvable ou de mauvaise architecture "
+         "(fbclient.dll 32/64 bits). Indiquez son chemin dans « fbclient »."),
+        (("no such file", "cannot open", "unable to open", "i/o error",
+          "error while trying to open file", "no permission",
+          "unavailable database", "file is not a valid database"),
+         "Base introuvable ou inaccessible : verifiez le chemin du fichier .FDB "
+         "(ex : C:/oransoft/netfact2/data/primeoffice2026.fdb)."),
+        (("user name", "login", "incorrect user", "install_check",
+          "your user name and password", "password"),
+         "Identifiant ou mot de passe incorrect (par defaut SYSDBA / masterkey)."),
+        (("connection refused", "rejected", "network", "failed to establish",
+          "unable to complete network"),
+         "Serveur Firebird injoignable : verifiez l'hote / le port, ou laissez "
+         "l'hote VIDE pour un acces local au fichier (embedded)."),
+        (("malformed string", "transliteration", "charset", "character set"),
+         "Probleme d'encodage : essayez un autre charset (WIN1252 ou NONE)."),
+        (("unsupported on-disk structure", "ods"),
+         "Version de base (ODS) non supportee par la librairie cliente "
+         "installee : utilisez le fbclient.dll fourni avec votre logiciel PRIME."),
+        (("table", "introuvable dans la base"),
+         "Table des articles introuvable : verifiez le nom de la table "
+         "(par defaut ARTICLE)."),
+    ]
+    for keys, msg in rules:
+        if any(k in t for k in keys):
+            return msg
+    s = (raw or "").strip()
+    return s.splitlines()[-1][:300] if s else "Erreur inconnue."
 
 
 # --------------------------------------------------------------------------- #
 #  Boite de dialogue de connexion
 # --------------------------------------------------------------------------- #
 class ConnectDialog(tk.Toplevel):
-    """Saisie / edition des parametres de connexion Firebird."""
+    """Ecran de connexion : choisir la base, tester la connexion, se connecter.
 
-    def __init__(self, master, cfg):
+    A la fermeture :
+      * self.result = dict de config si l'utilisateur s'est connecte (None sinon)
+      * self.repo   = le repository deja connecte (pour eviter une reconnexion)
+      * self.demo   = True si l'utilisateur a choisi le mode demonstration
+    """
+
+    def __init__(self, master, cfg, allow_demo=True):
         super().__init__(master)
-        self.title("Connexion a la base PRIME")
+        self.title("Connexion a la base PRIME (Firebird)")
         self.resizable(False, False)
         self.result = None
+        self.repo = None
+        self.demo = False
         self.cfg = dict(cfg)
         self.vars = {}
 
-        fields = [
-            ("database", "Fichier .FDB", 48),
-            ("host", "Hote (vide = local)", 24),
-            ("port", "Port", 24),
-            ("user", "Utilisateur", 24),
-            ("password", "Mot de passe", 24),
-            ("charset", "Charset", 24),
-            ("table", "Table", 24),
-            ("fb_client_library", "fbclient (optionnel)", 48),
-        ]
-        frm = ttk.Frame(self, padding=12)
+        frm = ttk.Frame(self, padding=14)
         frm.grid(row=0, column=0, sticky="nsew")
-        for i, (key, label, width) in enumerate(fields):
-            ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", pady=2, padx=(0, 8))
-            var = tk.StringVar(value=str(self.cfg.get(key, "")))
-            show = "*" if key == "password" else ""
-            ent = ttk.Entry(frm, textvariable=var, width=width, show=show)
-            ent.grid(row=i, column=1, sticky="we", pady=2)
-            if key == "database":
-                ttk.Button(frm, text="...", width=3,
-                           command=lambda v=var: self._browse(v)).grid(row=i, column=2, padx=4)
-            self.vars[key] = var
+        ttk.Label(frm, text="Base de donnees PRIME (Firebird)",
+                  font=("", 11, "bold")).grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(frm, foreground="#666",
+                  text="Choisissez le fichier .FDB puis testez la connexion avant d'ouvrir."
+                  ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
+        rows = [
+            ("database", "Fichier .FDB", 46, "file"),
+            ("host", "Hote (vide = acces local au fichier)", 30, None),
+            ("port", "Port", 30, None),
+            ("user", "Utilisateur", 30, None),
+            ("password", "Mot de passe", 30, None),
+            ("charset", "Charset", 30, "charset"),
+            ("table", "Table des articles", 30, None),
+            ("fb_client_library", "fbclient.dll (optionnel)", 46, "file"),
+        ]
+        r = 2
+        for key, label, width, kind in rows:
+            ttk.Label(frm, text=label).grid(row=r, column=0, sticky="w", pady=2, padx=(0, 8))
+            var = tk.StringVar(value=str(self.cfg.get(key, "") or ""))
+            self.vars[key] = var
+            if kind == "charset":
+                w = ttk.Combobox(frm, textvariable=var, values=CHARSETS, width=width - 3)
+            else:
+                show = "*" if key == "password" else ""
+                w = ttk.Entry(frm, textvariable=var, width=width, show=show)
+            w.grid(row=r, column=1, sticky="we", pady=2)
+            if kind == "file":
+                ttk.Button(frm, text="Parcourir…", width=11,
+                           command=lambda v=var, k=key: self._browse(v, k)
+                           ).grid(row=r, column=2, padx=4)
+            r += 1
+
+        # ligne test connexion
+        test_row = ttk.Frame(frm)
+        test_row.grid(row=r, column=0, columnspan=3, sticky="we", pady=(10, 2))
+        ttk.Button(test_row, text="Tester la connexion", command=self._test).pack(side="left")
+        self.conn_status = tk.StringVar(value="")
+        self.status_lbl = tk.Label(test_row, textvariable=self.conn_status, anchor="w",
+                                   justify="left", wraplength=420)
+        self.status_lbl.pack(side="left", padx=10, fill="x", expand=True)
+        r += 1
+
+        # boutons
         btns = ttk.Frame(frm)
-        btns.grid(row=len(fields), column=0, columnspan=3, pady=(12, 0), sticky="e")
+        btns.grid(row=r, column=0, columnspan=3, pady=(12, 0), sticky="e")
+        if allow_demo:
+            ttk.Button(btns, text="Mode demo", command=self._demo).pack(side="left", padx=4)
         ttk.Button(btns, text="Se connecter", command=self._ok).pack(side="left", padx=4)
         ttk.Button(btns, text="Annuler", command=self.destroy).pack(side="left")
 
+        frm.columnconfigure(1, weight=1)
         self.bind("<Return>", lambda e: self._ok())
+        self.bind("<Escape>", lambda e: self.destroy())
         self.transient(master)
         self.grab_set()
+        self.update_idletasks()
+        self._center(master)
 
-    def _browse(self, var):
-        path = filedialog.askopenfilename(
-            title="Choisir le fichier de base Firebird",
-            filetypes=[("Base Firebird", "*.fdb *.FDB *.gdb"), ("Tous", "*.*")])
+    def _center(self, master):
+        try:
+            self.geometry("+%d+%d" % (master.winfo_rootx() + 60, master.winfo_rooty() + 60))
+        except tk.TclError:
+            pass
+
+    def _browse(self, var, key):
+        if key == "fb_client_library":
+            path = filedialog.askopenfilename(
+                parent=self, title="Choisir fbclient",
+                filetypes=[("Librairies", "*.dll *.so *.dylib"), ("Tous", "*.*")])
+        else:
+            path = filedialog.askopenfilename(
+                parent=self, title="Choisir le fichier de base Firebird",
+                filetypes=[("Base Firebird", "*.fdb *.FDB *.gdb"), ("Tous", "*.*")])
         if path:
             var.set(path)
 
-    def _ok(self):
+    def _collect(self):
+        cfg = dict(self.cfg)
         for key, var in self.vars.items():
-            self.cfg[key] = var.get().strip()
-        if not self.cfg.get("database"):
-            messagebox.showwarning(APP_TITLE, "Indiquez le fichier .FDB.", parent=self)
+            cfg[key] = var.get().strip()
+        return cfg
+
+    def _set_status(self, state, msg):
+        color = {True: "#1f7a33", False: "#a11", None: "#555"}[state]
+        mark = {True: "✓ ", False: "✗ ", None: "" }[state]
+        self.conn_status.set(mark + msg)
+        self.status_lbl.configure(fg=color)
+        self.update_idletasks()
+
+    def _test(self):
+        cfg = self._collect()
+        if not cfg.get("database"):
+            self._set_status(False, "Indiquez d'abord le fichier .FDB.")
             return
-        self.result = self.cfg
+        self._set_status(None, "Connexion en cours…")
+        repo = None
+        try:
+            repo = ArticleRepository(cfg).connect()
+            n = repo.count()
+            fam = len(repo.list_familles()) if repo.has_famille_ref() else 0
+            self._set_status(True, "Connexion reussie : %d article(s), %d famille(s) "
+                             "(table %s)." % (n, fam, repo.table))
+        except DBError as exc:
+            self._set_status(False, friendly_error(str(exc)))
+        except Exception as exc:                       # noqa: BLE001
+            self._set_status(False, friendly_error(str(exc)))
+        finally:
+            if repo is not None:
+                repo.close()
+
+    def _ok(self):
+        cfg = self._collect()
+        if not cfg.get("database"):
+            self._set_status(False, "Indiquez le fichier .FDB.")
+            return
+        self._set_status(None, "Connexion en cours…")
+        try:
+            self.repo = ArticleRepository(cfg).connect()
+        except DBError as exc:
+            self._set_status(False, friendly_error(str(exc)))
+            return
+        except Exception as exc:                       # noqa: BLE001
+            self._set_status(False, friendly_error(str(exc)))
+            return
+        self.result = cfg
+        self.destroy()
+
+    def _demo(self):
+        self.demo = True
+        self.result = None
         self.destroy()
 
 
@@ -145,6 +279,31 @@ class BulkEditorApp(ttk.Frame):
         self._build_statusbar()
         self.reload()
 
+    # -- changer de base --------------------------------------------------
+    def change_database(self):
+        """Rouvre l'ecran de connexion et reconstruit l'application sur la base
+        choisie (le schema peut differer : on recree toute l'interface)."""
+        if (self.pending or self.new_familles) and not messagebox.askyesno(
+                APP_TITLE, "Des modifications ne sont pas enregistrees. "
+                "Changer de base et les abandonner ?"):
+            return
+        start_cfg = getattr(self.repo, "cfg", None) or dict(article_db.DEFAULT_CONFIG)
+        repo, cfg = prompt_connection(self.master, start_cfg)
+        if repo is None:
+            return
+        try:
+            self.repo.close()
+        except Exception:                              # noqa: BLE001
+            pass
+        if not isinstance(repo, DemoRepository):
+            try:
+                save_config(self.config_path or _default_config_path(), cfg)
+            except OSError:
+                pass
+        new_app = BulkEditorApp(self.master, repo, self.config_path)
+        self.master._app = new_app                     # pour la fermeture propre
+        self.destroy()
+
     # -- construction de l'interface -------------------------------------
     def _build_toolbar(self):
         bar = ttk.Frame(self)
@@ -160,6 +319,7 @@ class BulkEditorApp(ttk.Frame):
                    command=lambda: (self.search_var.set(""), self.reload())).pack(side="left", padx=4)
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8)
+        ttk.Button(bar, text="Changer de base…", command=self.change_database).pack(side="left", padx=2)
         ttk.Button(bar, text="Importer Excel/CSV...", command=self.import_file).pack(side="left", padx=2)
         ttk.Button(bar, text="Exporter CSV...", command=self.export_csv).pack(side="left", padx=2)
 
@@ -204,9 +364,8 @@ class BulkEditorApp(ttk.Frame):
         price.grid(row=0, column=0, sticky="w", padx=(0, 16))
         ttk.Label(price, text="PRIX DE VENTE", font=("", 9, "bold")).grid(
             row=0, column=0, columnspan=4, sticky="w")
-        self.price_base = tk.StringVar(value="HT")
-        ttk.Radiobutton(price, text="HT", value="HT", variable=self.price_base).grid(row=1, column=0)
-        ttk.Radiobutton(price, text="TTC", value="TTC", variable=self.price_base).grid(row=1, column=1)
+        ttk.Label(price, text="(HT et TTC = le meme prix ; la TVA n'est pas modifiee)",
+                  foreground="#888").grid(row=1, column=0, columnspan=4, sticky="w")
         self.price_mode = tk.StringVar(value="set")
         modes = [("Fixer a", "set"), ("+ %", "inc_pct"), ("- %", "dec_pct"),
                  ("+ montant", "inc_amount"), ("- montant", "dec_amount"),
@@ -214,17 +373,29 @@ class BulkEditorApp(ttk.Frame):
         self.price_combo = ttk.Combobox(price, state="readonly", width=14,
                                         values=[m[0] for m in modes])
         self.price_combo.current(0)
-        self.price_combo.grid(row=1, column=2, padx=4)
+        self.price_combo.grid(row=2, column=0, columnspan=2, padx=2, pady=(4, 0), sticky="w")
         self._price_modes = dict(modes)
         self.price_value = tk.StringVar()
-        ttk.Entry(price, textvariable=self.price_value, width=10).grid(row=1, column=3, padx=4)
-        ttk.Label(price, text="Arrondi :").grid(row=2, column=0, columnspan=1, sticky="e", pady=(4, 0))
+        ttk.Entry(price, textvariable=self.price_value, width=10).grid(
+            row=2, column=2, padx=4, pady=(4, 0))
+        ttk.Label(price, text="Arrondi :").grid(row=3, column=0, sticky="e", pady=(4, 0))
         self.round_combo = ttk.Combobox(price, state="readonly", width=10,
                                        values=[r[0] for r in ROUND_CHOICES])
         self.round_combo.current(0)
-        self.round_combo.grid(row=2, column=1, columnspan=2, sticky="w", pady=(4, 0))
-        ttk.Button(price, text="Appliquer", command=self.apply_price).grid(
-            row=2, column=3, sticky="e", pady=(4, 0))
+        self.round_combo.grid(row=3, column=1, sticky="w", pady=(4, 0))
+        ttk.Button(price, text="Appliquer prix", command=self.apply_price).grid(
+            row=3, column=2, columnspan=2, sticky="e", pady=(4, 0))
+
+        # --- TVA (taux), modifiable independamment du prix ---
+        if self.repo.has(Cols.TVA):
+            ttk.Separator(price, orient="horizontal").grid(
+                row=4, column=0, columnspan=4, sticky="ew", pady=6)
+            ttk.Label(price, text="TVA %").grid(row=5, column=0, sticky="e")
+            self.tva_value = tk.StringVar()
+            ttk.Entry(price, textvariable=self.tva_value, width=8).grid(
+                row=5, column=1, sticky="w")
+            ttk.Button(price, text="Fixer la TVA", command=self.apply_tva).grid(
+                row=5, column=2, columnspan=2, sticky="e")
 
         ttk.Separator(panel, orient="vertical").grid(row=0, column=1, sticky="ns", padx=8)
 
@@ -387,8 +558,9 @@ class BulkEditorApp(ttk.Frame):
                 messagebox.showwarning(APP_TITLE, "Valeur numerique invalide : %r" % new_value)
                 return
             value = num
-            # recalcul automatique de l'autre prix de vente
-            self._sync_price(rec, logical, value)
+            # le prix de vente HT et TTC restent identiques (pas la TVA)
+            if logical in Cols.PRICE_FIELDS:
+                self._sync_price(rec, logical, value)
         else:
             value = new_value.strip() or None
             real = self.repo.real(logical)
@@ -406,16 +578,16 @@ class BulkEditorApp(ttk.Frame):
         self._update_save_button()
 
     def _sync_price(self, rec, logical, value):
-        """Quand on change PV HT ou PV TTC, recalcule l'autre via la TVA."""
-        tva = rec.get(Cols.TVA)
-        if logical == Cols.PV_HT and self.repo.has(Cols.PV_TTC):
-            other = ht_to_ttc(value, tva)
-            rec[Cols.PV_TTC] = other
-            self._stage(rec, Cols.PV_TTC, other)
-        elif logical == Cols.PV_TTC and self.repo.has(Cols.PV_HT):
-            other = ttc_to_ht(value, tva)
-            rec[Cols.PV_HT] = other
-            self._stage(rec, Cols.PV_HT, other)
+        """Maintient PRIXVENTEHT et PRIXVENTETTC IDENTIQUES.
+
+        Dans la base PRIME, le prix de vente HT et le prix de vente TTC
+        contiennent la MEME valeur (le prix saisi) ; la TVA est portee a part
+        par TAUX_TVA. On recopie donc simplement la valeur sur l'autre champ,
+        sans aucun calcul base sur la TVA (ce qui evitait de fausser le taux)."""
+        for other in Cols.PRICE_FIELDS:
+            if other != logical and self.repo.has(other):
+                rec[other] = value
+                self._stage(rec, other, value)
 
     _ref_warned = False
 
@@ -502,22 +674,33 @@ class BulkEditorApp(ttk.Frame):
             messagebox.showwarning(APP_TITLE, "Indiquez la valeur du prix.")
             return
         op = PriceOp(mode=mode, value=val, round_to=round_to)
-        base = self.price_base.get()         # HT ou TTC
-        col = Cols.PV_HT if base == "HT" else Cols.PV_TTC
-        if not self.repo.has(col):
-            col = Cols.PV_HT if self.repo.has(Cols.PV_HT) else Cols.PV_TTC
+        # le prix de vente est unique : on prend un champ de reference present
+        col = Cols.PV_HT if self.repo.has(Cols.PV_HT) else Cols.PV_TTC
         n = 0
         for rec in recs:
-            cur = rec.get(col)
-            new = op.apply(cur)
+            new = op.apply(rec.get(col))
             if new is None:
                 continue
             rec[col] = new
             self._stage(rec, col, new)
-            self._sync_price(rec, col, new)
+            self._sync_price(rec, col, new)   # recopie sur l'autre champ (HT=TTC)
             n += 1
         self._refresh_all_selected(recs)
-        self.status.set("Prix applique a %d article(s)." % n)
+        self.status.set("Prix de vente applique a %d article(s)." % n)
+
+    def apply_tva(self):
+        recs = self._selected_recs()
+        if not recs:
+            return
+        tva = parse_number(self.tva_value.get())
+        if tva is None:
+            messagebox.showwarning(APP_TITLE, "Indiquez un taux de TVA (ex : 19).")
+            return
+        for rec in recs:
+            rec[Cols.TVA] = tva
+            self._stage(rec, Cols.TVA, tva)
+        self._refresh_all_selected(recs)
+        self.status.set("TVA %s%% appliquee a %d article(s)." % (fmt_price(tva), len(recs)))
 
     def copy_ref_to_barcode(self):
         recs = self._selected_recs()
@@ -821,26 +1004,47 @@ def open_repository(root, args):
         return DemoRepository().connect()
 
     cfg_path = args.config or _default_config_path()
-    cfg = load_config(cfg_path)
+    try:
+        cfg = load_config(cfg_path)
+        config_ok = True
+    except DBError as exc:
+        # config.json illisible : on previent et on ouvre la fenetre de connexion
+        messagebox.showerror(APP_TITLE, str(exc))
+        cfg = dict(article_db.DEFAULT_CONFIG)
+        config_ok = False
     if args.db:
         cfg["database"] = args.db
 
-    # Si pas de config exploitable, ouvrir la boite de dialogue de connexion.
-    need_dialog = args.ask or not os.path.isfile(cfg_path)
-    while True:
-        if need_dialog:
-            dlg = ConnectDialog(root, cfg)
-            root.wait_window(dlg)
-            if not dlg.result:
-                return None
-            cfg = dlg.result
+    # Connexion directe et silencieuse si une config valide existe deja
+    # (et qu'on ne force pas le dialogue). Sinon : ecran de connexion.
+    if config_ok and os.path.isfile(cfg_path) and not args.ask:
         try:
-            repo = ArticleRepository(cfg).connect()
+            return ArticleRepository(cfg).connect()
+        except DBError:
+            pass   # on bascule sur l'ecran de connexion ci-dessous
+
+    repo, cfg = prompt_connection(root, cfg)
+    if repo is not None:
+        try:
             save_config(cfg_path, cfg)     # memorise les parametres qui marchent
-            return repo
-        except DBError as exc:
-            messagebox.showerror(APP_TITLE, str(exc))
-            need_dialog = True
+        except OSError:
+            pass
+    return repo
+
+
+def prompt_connection(root, cfg, allow_demo=True):
+    """Affiche l'ecran de connexion en boucle. Renvoie (repo, cfg).
+
+    repo est deja connecte (ArticleRepository ou DemoRepository), ou None si
+    l'utilisateur annule.
+    """
+    dlg = ConnectDialog(root, cfg, allow_demo=allow_demo)
+    root.wait_window(dlg)
+    if dlg.demo:
+        return DemoRepository().connect(), cfg
+    if dlg.repo is not None:
+        return dlg.repo, dlg.result
+    return None, cfg
 
 
 def _default_config_path():
@@ -870,18 +1074,20 @@ def main(argv=None):
         root.destroy()
         return 0
 
-    app = BulkEditorApp(root, repo, config_path=args.config)
-    root.protocol("WM_DELETE_WINDOW", lambda: _on_close(root, app))
+    root._app = BulkEditorApp(root, repo, config_path=args.config)
+    root.protocol("WM_DELETE_WINDOW", lambda: _on_close(root))
     root.mainloop()
     return 0
 
 
-def _on_close(root, app):
-    if (app.pending or app.new_familles) and not messagebox.askyesno(
+def _on_close(root):
+    app = getattr(root, "_app", None)
+    if app is not None and (app.pending or app.new_familles) and not messagebox.askyesno(
             APP_TITLE, "Des modifications ne sont pas enregistrees. Quitter quand meme ?"):
         return
     try:
-        app.repo.close()
+        if app is not None:
+            app.repo.close()
     finally:
         root.destroy()
 
