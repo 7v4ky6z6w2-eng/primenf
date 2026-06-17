@@ -199,6 +199,20 @@ l'outil ci-dessus : choisir le fichier Excel, la base et le fournisseur,
 aucune logique : l'aperçu utilise `read_excel`, et l'exécution relance le
 `main()` de l'outil (comportement identique à la ligne de commande).
 
+Elle offre en plus :
+
+- une colonne **Prix vente** dans l'aperçu (marge + arrondi appliqués en direct) ;
+- les réglages **prix de vente** (marge, arrondi `seuil:pas`) directement à l'écran ;
+- un bouton **« Nettoyer ? »** qui lance `nettoyer_articles.py` (simulation puis
+  confirmation) pour supprimer les articles corrompus d'un ancien import ;
+- un **avertissement charset** : si l'arabe risque de devenir « ? » (WIN1252) ou
+  d'être déformé dans le logiciel (UTF8), l'aperçu le signale et conseille WIN1256.
+
+> **Arabe : choisissez le charset `WIN1256`.** En `UTF8`, l'aperçu affiche bien
+> l'arabe **mais l'import sera déformé** dans le logiciel (qui lit en WIN1256).
+> En `WIN1252`, l'arabe devient « ? ». `WIN1256` stocke l'arabe exactement comme
+> votre logiciel (vérifié octet par octet sur une base réelle).
+
 ```bash
 pip install -r requirements-gui.txt
 python import_bon_reception_gui.py
@@ -208,10 +222,9 @@ Empaquetage en exécutable Windows (`.exe`) avec PyInstaller :
 
 ```bash
 pyinstaller --onefile --windowed --name ImportBonReception \
-    --add-data "import_bon_reception.py;." import_bon_reception_gui.py
+    --add-data "import_bon_reception.py;." \
+    --add-data "nettoyer_articles.py;." import_bon_reception_gui.py
 ```
 
-> La GUI reprend les valeurs par défaut de l'outil (prix de vente +50 %,
-> arrondi, code-barres = référence…). Les options de prix de vente se règlent
-> dans `config.json` / l'outil ; gardez `import_bon_reception.py` dans le même
-> dossier que la GUI.
+> Gardez `import_bon_reception.py` et `nettoyer_articles.py` dans le même dossier
+> que la GUI (ou bundlés via `--add-data`).

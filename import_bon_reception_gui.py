@@ -39,6 +39,7 @@ import tempfile
 import traceback
 
 SCRIPT_NAME = "import_bon_reception.py"
+CLEAN_SCRIPT_NAME = "nettoyer_articles.py"
 CHARSETS = ["WIN1256", "WIN1252", "ISO8859_1", "UTF8", "NONE", "DOS850"]
 ORG, APP = "PrimeOffice", "ImportBonReception"
 
@@ -93,19 +94,23 @@ def app_dir():
     return os.path.dirname(GUI_SCRIPT)
 
 
-def resolve_script_path():
-    """Trouve import_bon_reception.py : dans le bundle PyInstaller (_MEIPASS)
-    si gele, sinon a cote de ce fichier."""
+def resolve_named_script(name):
+    """Trouve un script (import_bon_reception.py / nettoyer_articles.py) :
+    dans le bundle PyInstaller (_MEIPASS) si gele, sinon a cote de ce fichier."""
     candidates = []
     if getattr(sys, "frozen", False):
         meipass = getattr(sys, "_MEIPASS", None)
         if meipass:
-            candidates.append(os.path.join(meipass, SCRIPT_NAME))
-    candidates.append(os.path.join(app_dir(), SCRIPT_NAME))
+            candidates.append(os.path.join(meipass, name))
+    candidates.append(os.path.join(app_dir(), name))
     for c in candidates:
         if os.path.isfile(c):
             return c
     return None
+
+
+def resolve_script_path():
+    return resolve_named_script(SCRIPT_NAME)
 
 
 def load_tool_module(script_path):
@@ -190,6 +195,44 @@ def run_cli(argv):
         return 1
 
 
+def run_clean(argv):
+    """Execute nettoyer_articles.main() avec argv. L'outil d'origine est charge
+    sous le nom 'import_bon_reception' pour que le script de nettoyage puisse
+    l'importer (fonctionne en script ET en .exe gele)."""
+    clean_path = resolve_named_script(CLEAN_SCRIPT_NAME)
+    if not clean_path:
+        print("Script %s introuvable." % CLEAN_SCRIPT_NAME)
+        return 1
+    tool, err = load_tool_module(resolve_script_path())
+    if not tool:
+        print(err)
+        return 1
+    sys.modules["import_bon_reception"] = tool  # pour le 'from import_bon_reception import ...'
+    try:
+        spec = importlib.util.spec_from_file_location("nettoyer_articles", clean_path)
+        clean = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(clean)
+    except SystemExit as exc:
+        print(str(exc.code or "Dependance manquante."))
+        return 1
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+        return 1
+    sys.argv = ["nettoyer_articles"] + list(argv)
+    try:
+        clean.main()
+        return 0
+    except SystemExit as exc:
+        code = exc.code
+        if isinstance(code, str):
+            print(code)
+            return 1
+        return int(code) if code else 0
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()
+        return 1
+
+
 # --------------------------------------------------------------------------- #
 #  GUI
 # --------------------------------------------------------------------------- #
@@ -227,6 +270,11 @@ def _window_class():
             self._apply_defaults_from_tool()
             self._load_settings()
             self._refresh_script_banner()
+            # rafraichir l'apercu quand les options prix de vente / charset changent
+            self.f_prix_vente_auto.toggled.connect(lambda *_: self._reload_preview())
+            self.f_marge.valueChanged.connect(lambda *_: self._reload_preview())
+            self.f_arrondi.editingFinished.connect(self._reload_preview)
+            self.f_charset.currentTextChanged.connect(lambda *_: self._reload_preview())
 
         # ---- creation des widgets de saisie (noms stables) -------------- #
         def _create_fields(self):
@@ -351,10 +399,16 @@ def _window_class():
             for b in (self.btn_preview, self.btn_import):
                 b.setFont(bf); b.setMinimumHeight(38)
             self.btn_import.setStyleSheet("QPushButton { background:#7a1f1f; color:white; }")
+            self.btn_clean = QPushButton("Nettoyer « ? »")
+            self.btn_clean.setToolTip(
+                "Supprimer les articles corrompus (designation contenant « ? ») "
+                "issus d'un import au mauvais charset.")
+            self.btn_clean.clicked.connect(self.run_clean_action)
             self.btn_cancel = QPushButton("Arreter"); self.btn_cancel.setEnabled(False)
             self.btn_cancel.clicked.connect(self.cancel_run)
             actions.addWidget(self.btn_preview); actions.addWidget(self.btn_import)
-            actions.addStretch(1); actions.addWidget(self.btn_cancel)
+            actions.addStretch(1)
+            actions.addWidget(self.btn_clean); actions.addWidget(self.btn_cancel)
             root.addLayout(actions)
 
             self.busy = QProgressBar(); self.busy.setRange(0, 1); self.busy.setValue(0)
@@ -363,9 +417,10 @@ def _window_class():
 
             # --- sorties ---
             out = QTabWidget()
-            self.preview_table = QTableWidget(0, 7)
+            self.preview_table = QTableWidget(0, 8)
             self.preview_table.setHorizontalHeaderLabels(
-                ["Ref. Art.", "Designation", "Qte", "Prix HT", "TVA %", "Famille", "Total HT"])
+                ["Ref. Art.", "Designation", "Qte", "Prix achat HT", "Prix vente",
+                 "TVA %", "Famille", "Total HT"])
             self.preview_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
             self.preview_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
             self.preview_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -571,20 +626,50 @@ def _window_class():
                 self.preview_count.setText("Lecture impossible : %s" % friendly_error(str(exc)))
                 return
             total = 0.0
+            auto = bool(base.get("prix_vente_auto"))
+            marge = float(base.get("marge_pct", 50) or 0)
+            tiers = base.get("arrondi_paliers") or [[200, 5], [1000, 10], [None, 50]]
+            round_fn = getattr(self.tool_mod, "round_price_up", None)
             self.preview_table.setRowCount(len(lines))
             for r, ln in enumerate(lines):
                 ht = ln["qte"] * ln["prix"]; total += ht
+                if auto and round_fn:
+                    pv = round_fn(ln["prix"] * (1 + marge / 100.0), tiers)
+                    pv_txt = self._fmt(pv)
+                else:
+                    pv_txt = ""
                 cells = [ln["ref_art"], ln["designation"], self._fmt(ln["qte"]),
-                         self._fmt(ln["prix"]), self._fmt(ln["tva"]),
+                         self._fmt(ln["prix"]), pv_txt, self._fmt(ln["tva"]),
                          ln["famille"] or "(defaut)", self._fmt(ht)]
                 for c, txt in enumerate(cells):
                     it = QTableWidgetItem(txt)
-                    if c in (2, 3, 4, 6):
+                    if c in (2, 3, 4, 5, 7):
                         it.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                     self.preview_table.setItem(r, c, it)
-            self.preview_count.setText(
-                "%d ligne(s)  ·  Total HT indicatif : %s   (comptes crees/existants "
-                "apres un apercu dry-run)" % (len(lines), self._fmt(round(total, 2))))
+            msg = ("%d ligne(s)  ·  Total HT indicatif : %s   (comptes crees/existants "
+                   "apres un apercu dry-run)" % (len(lines), self._fmt(round(total, 2))))
+            charset = str(base.get("charset", "")).upper()
+            desigs = [ln.get("designation") or "" for ln in lines]
+
+            def _nonlatin(s):
+                try:
+                    s.encode("latin-1"); return False
+                except UnicodeEncodeError:
+                    return True
+
+            has_q = any("?" in d for d in desigs)
+            has_arabic = any(_nonlatin(d) for d in desigs)
+            warn = ""
+            if has_q and charset not in ("WIN1256", "UTF8", "UNICODE_FSS"):
+                warn = ("\n⚠ Des caracteres ont ete remplaces par « ? » : le charset "
+                        "« %s » ne gere pas l'arabe. Choisissez WIN1256." % charset)
+            elif has_arabic and charset in ("UTF8", "UNICODE_FSS"):
+                warn = ("\n⚠ L'arabe s'affiche ICI, mais votre logiciel lit en WIN1256 : "
+                        "avec « %s » l'import sera DEFORME dans le logiciel. "
+                        "Choisissez WIN1256." % charset)
+            self.preview_count.setStyleSheet(
+                "color:#7a1f1f; font-weight:bold;" if warn else "color:#555;")
+            self.preview_count.setText(msg + warn)
 
         @staticmethod
         def _fmt(v):
@@ -787,11 +872,90 @@ def _window_class():
             self.status.setText("Termine (code 0)." if code == 0
                                 else "Termine avec erreurs (code %s) — voir Journal." % code)
 
+        # ----- Nettoyage des articles corrompus « ? » -----
+        def run_clean_action(self):
+            if self.proc is not None:
+                return
+            if not self.f_database.text().strip():
+                QMessageBox.warning(self, "A corriger", "Renseignez la base Firebird (.FDB)."); return
+            if not self.script_path:
+                QMessageBox.warning(self, "A corriger", "Outil import_bon_reception.py introuvable."); return
+            try:
+                fd, self.tmp_config_path = tempfile.mkstemp(suffix=".json", prefix="primenf_cfg_")
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(self._build_config_dict(), fh, indent=2, ensure_ascii=False)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.critical(self, "Erreur", "Config temporaire : %s" % exc); return
+            self.log.clear()
+            self._start_clean(apply=False)
+
+        def _start_clean(self, apply):
+            cli = ["--run-clean", "--config", self.tmp_config_path]
+            if apply:
+                cli += ["--apply", "--purge-pieces", "--purge-familles"]
+            if getattr(sys, "frozen", False):
+                program, args = sys.executable, cli
+            else:
+                program, args = sys.executable, [GUI_SCRIPT] + cli
+            self.clean_apply = apply
+            self._append_log("$ %s\n" % " ".join(self._q(a) for a in [program] + args))
+            self.proc = QProcess(self)
+            self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            self.proc.readyReadStandardOutput.connect(self._on_output)
+            self.proc.finished.connect(self._on_clean_finished)
+            self.proc.errorOccurred.connect(self._on_proc_error)
+            self._set_running(True)
+            self.status.setText("Nettoyage : suppression…" if apply else "Nettoyage : simulation…")
+            self.proc.setProgram(program); self.proc.setArguments(args); self.proc.start()
+
+        def _on_clean_finished(self, code, _st):
+            text = self.log.toPlainText()
+            self.proc = None
+            self._set_running(False)
+            if self.clean_apply:
+                self.status.setText("Nettoyage termine (code 0)." if code == 0
+                                    else "Nettoyage : erreur (code %s) — voir Journal." % code)
+                self._cleanup_tmp()
+                return
+            # fin de la simulation
+            if code != 0:
+                self.status.setText("Nettoyage : erreur (voir Journal).")
+                self._cleanup_tmp(); return
+            m = re.search(r"corrompus[^:]*:\s*(\d+)", text)
+            n = int(m.group(1)) if m else 0
+            if n == 0:
+                QMessageBox.information(self, "Nettoyage", "Aucun article corrompu (« ? ») trouve.")
+                self.status.setText("Nettoyage : rien a supprimer."); self._cleanup_tmp(); return
+            ok = QMessageBox.question(
+                self, "Confirmer la suppression",
+                "%d article(s) corrompu(s) trouve(s).\n\n"
+                "Les supprimer DEFINITIVEMENT, avec leurs lignes liees (ITEM, TARIF…), "
+                "les bons devenus vides et les familles « ? » sans article ?\n\n"
+                "Sauvegardez la base au prealable." % n,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if ok == QMessageBox.StandardButton.Yes:
+                self._start_clean(apply=True)
+            else:
+                self.status.setText("Nettoyage annule."); self._cleanup_tmp()
+
+        def _cleanup_tmp(self):
+            if self.tmp_config_path and os.path.isfile(self.tmp_config_path):
+                try: os.remove(self.tmp_config_path)
+                except OSError: pass
+            self.tmp_config_path = None
+
+        def _reload_preview(self):
+            path = self.excel_edit.text().strip()
+            if path and os.path.isfile(path):
+                self.load_preview(path)
+
         def _set_running(self, running):
             self.busy.setRange(0, 0) if running else self.busy.setRange(0, 1)
             if not running:
                 self.busy.setValue(0)
-            for b in (self.btn_preview, self.btn_import, self.btn_test, self.adv):
+            for b in (self.btn_preview, self.btn_import, self.btn_test,
+                      self.btn_clean, self.adv):
                 b.setEnabled(not running)
             self.btn_cancel.setEnabled(running)
 
@@ -856,4 +1020,7 @@ if __name__ == "__main__":
     if "--run-cli" in sys.argv:
         rest = [a for a in sys.argv[1:] if a != "--run-cli"]
         sys.exit(run_cli(rest))
+    if "--run-clean" in sys.argv:
+        rest = [a for a in sys.argv[1:] if a != "--run-clean"]
+        sys.exit(run_clean(rest))
     sys.exit(main())
