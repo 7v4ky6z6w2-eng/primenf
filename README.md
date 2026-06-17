@@ -82,6 +82,39 @@ python bulk_article_editor.py --demo          # données fictives, SANS Firebird
 
 Astuce : commencez par `--demo` pour découvrir l'interface sans risque.
 
+## Créer un .exe (Windows)
+
+Pour utiliser l'outil sur un poste **sans Python**, fabriquez un exécutable avec
+PyInstaller. Le plus simple :
+
+```powershell
+py -3.11 -m pip install -r requirements.txt -r requirements-build.txt
+.\build_exe.ps1
+```
+(ou double-cliquez `build_exe.bat`). L'exécutable est créé dans
+`dist\BulkArticleEditor.exe` — un **seul fichier**, copiable sur un autre poste.
+
+Commande équivalente, à la main :
+```powershell
+py -3.11 -m PyInstaller --onefile --windowed --name BulkArticleEditor bulk_article_editor.py
+```
+
+Points importants :
+
+* **`config.json`** n'est *pas* inclus dans l'exe (il contient vos identifiants).
+  Au premier lancement, l'écran de connexion s'ouvre et **enregistre**
+  `config.json` **à côté de l'exe**. Vous pouvez aussi y déposer votre propre
+  `config.json` (copie de `config.example.json`).
+* **`fbclient.dll`** (client Firebird) **n'est pas embarqué** : il doit être
+  présent sur le poste cible — c'est le cas là où PRIME/NetFact est installé.
+  Sinon, indiquez son chemin dans le champ *fbclient* de l'écran de connexion.
+* **32 / 64 bits** : construisez l'exe avec un Python de la **même architecture**
+  que votre `fbclient.dll` (souvent **32 bits** pour Firebird/PRIME). En cas
+  d'erreur « n'est pas une application Win32 valide » ou fbclient introuvable,
+  réinstallez un **Python 3.11 32 bits** et reconstruisez.
+* `--windowed` masque la console. Pour diagnostiquer un souci, reconstruisez
+  **sans** `--windowed` afin de voir les messages.
+
 ## Utilisation
 
 1. **Rechercher / filtrer** : tapez une référence, un code-barres ou un libellé,

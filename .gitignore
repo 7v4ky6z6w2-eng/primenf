@@ -8,3 +8,8 @@ __pycache__/
 *.FDB
 *.gdb
 export_*.csv
+
+# PyInstaller
+build/
+dist/
+*.spec

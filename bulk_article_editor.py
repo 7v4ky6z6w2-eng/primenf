@@ -1048,7 +1048,16 @@ def prompt_connection(root, cfg, allow_demo=True):
 
 
 def _default_config_path():
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+    """Chemin de config.json, A COTE de l'exe une fois empaquete (PyInstaller).
+
+    En .exe --onefile, __file__ pointe vers un dossier temporaire (_MEIPASS)
+    efface a la fermeture : on prend alors le dossier de l'executable pour que
+    config.json soit persistant et editable a cote du programme."""
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(os.path.abspath(sys.executable))
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, "config.json")
 
 
 def main(argv=None):
