@@ -18,7 +18,12 @@ if errorlevel 1 goto erreur
 
 echo.
 echo Construction de l'executable...
+REM --collect-all : openpyxl/fdb sont importes dynamiquement, il faut les
+REM forcer car PyInstaller ne les detecte pas tout seul.
 %PY% -m PyInstaller --onefile --windowed --name ImportBonReception ^
+    --collect-all openpyxl ^
+    --collect-all et_xmlfile ^
+    --collect-all fdb ^
     --add-data "import_bon_reception.py;." ^
     --add-data "nettoyer_articles.py;." ^
     --add-data "reparer_encodage.py;." ^

@@ -242,12 +242,19 @@ Empaquetage en exécutable Windows (`.exe`) avec PyInstaller :
 ```bat
 py -3.11 -m pip install pyinstaller -r requirements-gui.txt
 py -3.11 -m PyInstaller --onefile --windowed --name ImportBonReception ^
+    --collect-all openpyxl --collect-all et_xmlfile --collect-all fdb ^
     --add-data "import_bon_reception.py;." ^
     --add-data "nettoyer_articles.py;." ^
     --add-data "reparer_encodage.py;." import_bon_reception_gui.py
 ```
 
-Le plus simple : double-cliquez **`build_exe.bat`** (il utilise `py -3.11`).
+> Les `--collect-all openpyxl/et_xmlfile/fdb` sont **indispensables** : ces
+> modules sont chargés dynamiquement par la GUI, donc PyInstaller ne les
+> embarque pas tout seul. Sans eux, l'exe affiche « module openpyxl non
+> installé ».
+
+Le plus simple : double-cliquez **`build_exe.bat`** (il utilise `py -3.11`)
+ou lancez **`build_exe.ps1`** sous PowerShell.
 L'exécutable est créé dans `dist\ImportBonReception.exe`.
 
 ### Distribuer l'exe sur d'autres PC

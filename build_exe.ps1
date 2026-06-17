@@ -23,7 +23,11 @@ py $PY -m pip install pyinstaller -r requirements-gui.txt
 if ($LASTEXITCODE -ne 0) { Write-Host "Echec d'installation des dependances." -ForegroundColor Red; exit 1 }
 
 Write-Host "`n== Construction de l'executable ==" -ForegroundColor Cyan
+# --collect-all : openpyxl/fdb sont importes dynamiquement, il faut les forcer.
 py $PY -m PyInstaller --onefile --windowed --name ImportBonReception `
+    --collect-all openpyxl `
+    --collect-all et_xmlfile `
+    --collect-all fdb `
     --add-data "import_bon_reception.py;." `
     --add-data "nettoyer_articles.py;." `
     --add-data "reparer_encodage.py;." `
