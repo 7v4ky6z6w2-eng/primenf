@@ -1,0 +1,11 @@
+{
+  "host": "localhost",
+  "port": 3050,
+  "database": "C:\\PRIME\\PR22.FDB",
+  "user": "SYSDBA",
+  "password": "masterkey",
+  "charset": "WIN1252",
+  "table": "ARTICLE",
+  "famille_table": "FAMILLE",
+  "fb_client_library": ""
+}

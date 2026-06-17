@@ -1,0 +1,4 @@
+# Editeur en masse des articles PRIME (Firebird) — dependances
+fdb>=2.0          # pilote Firebird (le meme que votre script d'import)
+openpyxl>=3.0     # lecture/ecriture des fichiers Excel (.xlsx)
+# Tkinter est livre avec Python (paquet "python3-tk" sous Linux).

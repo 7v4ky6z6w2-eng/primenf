@@ -1,0 +1,10 @@
+# Configuration locale avec identifiants — ne pas committer
+config.json
+# Python
+__pycache__/
+*.pyc
+# Bases / exports locaux
+*.fdb
+*.FDB
+*.gdb
+export_*.csv
