@@ -232,22 +232,23 @@ Elle offre en plus :
 > En `WIN1252`, l'arabe devient « ? ». `WIN1256` stocke l'arabe exactement comme
 > votre logiciel (vérifié octet par octet sur une base réelle).
 
-```bash
-pip install -r requirements-gui.txt
-python import_bon_reception_gui.py
+```bat
+py -3.11 -m pip install -r requirements-gui.txt
+py -3.11 import_bon_reception_gui.py
 ```
 
 Empaquetage en exécutable Windows (`.exe`) avec PyInstaller :
 
-```bash
-pyinstaller --onefile --windowed --name ImportBonReception \
-    --add-data "import_bon_reception.py;." \
-    --add-data "nettoyer_articles.py;." \
+```bat
+py -3.11 -m pip install pyinstaller -r requirements-gui.txt
+py -3.11 -m PyInstaller --onefile --windowed --name ImportBonReception ^
+    --add-data "import_bon_reception.py;." ^
+    --add-data "nettoyer_articles.py;." ^
     --add-data "reparer_encodage.py;." import_bon_reception_gui.py
 ```
 
-Le plus simple : double-cliquez **`build_exe.bat`** (sur Windows, Python
-installé). L'exécutable est créé dans `dist\ImportBonReception.exe`.
+Le plus simple : double-cliquez **`build_exe.bat`** (il utilise `py -3.11`).
+L'exécutable est créé dans `dist\ImportBonReception.exe`.
 
 ### Distribuer l'exe sur d'autres PC
 
