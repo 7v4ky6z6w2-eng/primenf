@@ -477,6 +477,32 @@ class BulkEditorApp(ttk.Frame):
                        command=self.apply_famille_new).grid(row=2, column=2, padx=2)
             self._refresh_famille_combo()
 
+        # --- Tarifs (prix par type de tarif, en masse sur la selection) ---
+        if self.tarif_types:
+            ttk.Separator(panel, orient="vertical").grid(row=0, column=7, sticky="ns", padx=8)
+            tar = ttk.Frame(panel)
+            tar.grid(row=0, column=8, sticky="nw")
+            ttk.Label(tar, text="TARIFS", font=("", 9, "bold")).grid(
+                row=0, column=0, columnspan=3, sticky="w")
+            ttk.Label(tar, text="Type :").grid(row=1, column=0, sticky="e", pady=2)
+            self.tarif_bulk_combo = ttk.Combobox(
+                tar, state="readonly", width=20,
+                values=["%s — %s" % (c, n) for c, n in self.tarif_types])
+            self.tarif_bulk_combo.current(0)
+            self.tarif_bulk_combo.grid(row=1, column=1, columnspan=2, pady=2, sticky="w")
+            self.tarif_bulk_mode = tk.StringVar(value="manual")
+            ttk.Radiobutton(tar, text="Manuel", variable=self.tarif_bulk_mode,
+                            value="manual").grid(row=2, column=0, columnspan=2, sticky="w",
+                                                 pady=(4, 0))
+            ttk.Radiobutton(tar, text="% du PA HT", variable=self.tarif_bulk_mode,
+                            value="pct_pa").grid(row=2, column=2, sticky="w", pady=(4, 0))
+            ttk.Label(tar, text="Valeur :").grid(row=3, column=0, sticky="e", pady=(4, 0))
+            self.tarif_bulk_value = tk.StringVar()
+            ttk.Entry(tar, textvariable=self.tarif_bulk_value, width=10).grid(
+                row=3, column=1, padx=4, pady=(4, 0))
+            ttk.Button(tar, text="Appliquer", command=self.apply_tarif_bulk).grid(
+                row=3, column=2, pady=(4, 0))
+
     def _build_statusbar(self):
         self.status = tk.StringVar()
         bar = ttk.Frame(self)
@@ -918,6 +944,40 @@ class BulkEditorApp(ttk.Frame):
         self._stage(rec, Cols.FAMILLE, new_code)
         self._refresh_row(iid, rec)
         self._update_save_button()
+
+    def apply_tarif_bulk(self):
+        """Operation en masse : fixer le prix d'un type de tarif (manuel ou % du PA HT)."""
+        recs = self._selected_recs()
+        if not recs:
+            return
+        idx = self.tarif_bulk_combo.current()
+        if idx < 0:
+            messagebox.showwarning(APP_TITLE, "Choisissez un type de tarif.")
+            return
+        type_code, type_name = self.tarif_types[idx]
+        val = parse_number(self.tarif_bulk_value.get())
+        if val is None:
+            messagebox.showwarning(APP_TITLE, "Indiquez une valeur numerique.")
+            return
+        mode = self.tarif_bulk_mode.get()
+        n = 0
+        for rec in recs:
+            if mode == "pct_pa":
+                pa = parse_number(rec.get(Cols.PA_HT))
+                if pa is None:
+                    continue
+                price = round(pa * (1 + val / 100.0), 2)
+            else:
+                price = round(val, 2)
+            self.pending_tarifs.setdefault(rec.get("__ref0__"), {})[type_code] = price
+            n += 1
+        self._refresh_all_selected(recs)
+        if mode == "pct_pa":
+            self.status.set("Tarif '%s' = PA HT +%g%% applique a %d article(s)."
+                            % (type_name, val, n))
+        else:
+            self.status.set("Tarif '%s' fixe a %.2f pour %d article(s)."
+                            % (type_name, price, n))
 
     def _apply_text_to_rec(self, rec, logical, op, source=None):
         new = op.apply(rec.get(logical), source_value=source)
