@@ -588,18 +588,27 @@ class BulkEditorApp(ttk.Frame):
         logical = self.columns[col_idx]
         rec = self.row_by_iid[iid]
 
-        # -- colonne tarif (prix manuel par type de tarif) ----------------
+        # -- colonne tarif (prix par type de tarif) -----------------------
         if logical.startswith("__tarif_"):
             type_code = logical[8:-2]
             ref0 = rec.get("__ref0__")
             old = self.pending_tarifs.get(ref0, {}).get(
                 type_code, self.tarif_data.get(ref0, {}).get(type_code))
-            x, y, w, h = self.tree.bbox(iid, col_id)
+            box = self.tree.bbox(iid, col_id)
+            if not box:                       # cellule hors champ : on la rend visible
+                self.tree.see(iid)
+                self.update_idletasks()
+                box = self.tree.bbox(iid, col_id)
+            if not box:
+                return
+            x, y, w, h = box
             edit = tk.Entry(self.tree)
             edit.insert(0, fmt_price(old) if old is not None else "")
             edit.select_range(0, "end")
             edit.focus_set()
             edit.place(x=x, y=y, width=w, height=h)
+            self.status.set("Tarif : tapez un prix (ex 12,50) ou une marge en %% "
+                            "du PA HT (ex 20%%), puis Entree.")
 
             def commit_tarif(_=None, tc=type_code):
                 new = edit.get()
@@ -662,7 +671,13 @@ class BulkEditorApp(ttk.Frame):
         self._update_save_button()
 
     def _set_tarif_cell(self, iid, rec, type_code, new_value):
-        """Valide et met en attente une modification de prix tarif."""
+        """Valide et met en attente une modification de prix tarif.
+
+        Deux facons de saisir, au choix, directement dans la cellule :
+          * un nombre simple  (ex : 12,50)  -> prix MANUEL ;
+          * un nombre suivi de %  (ex : 20%) -> MARGE en % du PRIX D'ACHAT HT
+            -> prix = PA_HT x (1 + 20/100). Necessite un PA HT sur l'article.
+        """
         new_value = new_value.strip()
         ref0 = rec.get("__ref0__")
         if new_value == "":
@@ -670,12 +685,28 @@ class BulkEditorApp(ttk.Frame):
                 self.pending_tarifs[ref0].pop(type_code, None)
                 if not self.pending_tarifs[ref0]:
                     del self.pending_tarifs[ref0]
+            self._refresh_row(iid, rec)
+            self._update_save_button()
+            return
+        if new_value.endswith("%"):
+            pct = parse_number(new_value[:-1])
+            if pct is None:
+                messagebox.showwarning(APP_TITLE, "Pourcentage invalide : %r" % new_value)
+                return
+            pa = parse_number(rec.get(Cols.PA_HT))
+            if pa is None:
+                messagebox.showwarning(
+                    APP_TITLE, "Pas de prix d'achat HT sur cet article : "
+                    "impossible de calculer un %% (saisissez un prix manuel).")
+                return
+            val = round(pa * (1 + pct / 100.0), 2)
         else:
             val = parse_number(new_value)
             if val is None:
                 messagebox.showwarning(APP_TITLE, "Valeur numerique invalide : %r" % new_value)
                 return
-            self.pending_tarifs.setdefault(ref0, {})[type_code] = val
+            val = round(val, 2)
+        self.pending_tarifs.setdefault(ref0, {})[type_code] = val
         self._refresh_row(iid, rec)
         self._update_save_button()
 
