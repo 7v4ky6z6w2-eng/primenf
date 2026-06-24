@@ -131,7 +131,7 @@ Clés utiles :
   l'écriture — plus de « ???? » à la place de l'arabe si le bon charset est
   choisi.
 
-## Format du fichier Excel
+## Colonnes attendues
 
 L'outil détecte automatiquement la ligne d'en-tête (celle qui contient
 `Ref. Art.`) et reconnaît les colonnes par leur nom (insensible aux accents
@@ -149,6 +149,29 @@ et à la casse). Colonnes reconnues :
 
 Le format exporté par le logiciel (`Liste des articles de la pièce : …`) est
 pris en charge tel quel.
+
+Utilisez le bouton **« Créer un modèle Excel »** (GUI) ou la commande
+`--make-template` pour obtenir un fichier `.xlsx` prêt à remplir.
+
+### Prompt OCR (photo → Excel)
+
+Si vous numérisez un bon fournisseur papier, donnez ce prompt à Claude ou
+tout autre outil de lecture d'image, en attachant la photo du bon :
+
+```
+Lis ce bon de réception fournisseur et retourne un fichier Excel avec
+exactement ces colonnes dans cet ordre :
+  Ref. Art. | Désignation | QTE | Prix HT | TVA | Famille | Code barres
+  
+Règles :
+- Ref. Art. : référence article exacte du fournisseur (ou vide si absente)
+- QTE : quantité reçue (nombre)
+- Prix HT : prix unitaire hors taxes (nombre, sans symbole)
+- TVA : taux de TVA (0, 9, 19… — sans le %)
+- Famille : catégorie ou rayon (vide si absent)
+- Code barres : code EAN/gencode (vide si absent)
+- Une ligne par article, sans ligne de total
+```
 
 ## Utilisation
 
@@ -218,6 +241,23 @@ aucune logique : l'aperçu utilise `read_excel`, et l'exécution relance le
 
 Elle offre en plus :
 
+- **Table éditable** : toutes les colonnes (Ref., Désignation, Qté, Prix achat HT,
+  Prix vente, TVA %, Famille, Code-barres) sont modifiables avant import ; le
+  Prix vente et le Total HT se recalculent automatiquement.
+- **Rechercher correspondances** : rapproche chaque ligne sans référence à un
+  article existant via le numéro dans la désignation (colore en vert=exact,
+  jaune=retrouvé, rose=nouveau) et pré-remplit la référence.
+- **MAJ Prix achat** : cochez la case d'une ligne pour mettre à jour le prix
+  d'achat d'un article existant (avec alerte si l'écart dépasse le seuil configuré).
+- **Charger les listes** : après un test de connexion, remplit les listes
+  déroulantes Famille, Fournisseur et Dépôt depuis la base réelle.
+- **N° du bon fournisseur** : champ `refdoc` stocké dans `PIECE.REFDOC`
+  (permet la détection de doublons).
+- **Vérification doublons** : avant un import réel, détecte automatiquement
+  un bon déjà importé (même N° de bon ou même fournisseur + même total).
+- **Annuler le dernier import** : après un import réel réussi, annule le bon
+  en base (le stock est repris — sans suppression, natif au logiciel).
+- **Créer un modèle Excel** : génère un fichier `.xlsx` prêt à remplir.
 - une colonne **Prix vente** dans l'aperçu (marge + arrondi appliqués en direct) ;
 - les réglages **prix de vente** (marge, arrondi `seuil:pas`) directement à l'écran ;
 - un bouton **« Réparer l'arabe »** qui corrige sur place les noms déformés par
@@ -226,6 +266,20 @@ Elle offre en plus :
 - un **garde-fou** : si le fichier contient de l'arabe et que le charset choisi
   n'est pas WIN1256, l'aperçu l'affiche en rouge **et l'import réel demande
   confirmation** (UTF8 → déformé dans le logiciel ; WIN1252 → « ? »).
+
+### Base de données distante (réseau)
+
+Pour accéder à une base sur un serveur (PC serveur avec Firebird installé) :
+
+| Champ | Valeur |
+|-------|--------|
+| **Hôte** | adresse IP ou nom du serveur (ex. `192.168.1.10` ou `SERVEUR-PRIME`) |
+| **Port** | `3050` (défaut Firebird) |
+| **Base** | chemin du `.FDB` **tel que vu par le serveur** (ex. `C:\PRIME\PR22.FDB`) ou un alias Firebird |
+| **Librairie cliente** | `fbclient.dll` du même bitness que Python, sur **le poste client** |
+
+Chaque poste client doit avoir `fbclient.dll` ; le fichier `.FDB` reste sur
+le serveur. La base est accédée via le protocole TCP/IP Firebird (port 3050).
 
 > **Arabe : choisissez le charset `WIN1256`.** En `UTF8`, l'aperçu affiche bien
 > l'arabe **mais l'import sera déformé** dans le logiciel (qui lit en WIN1256).

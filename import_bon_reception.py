@@ -37,6 +37,7 @@ Dependances : openpyxl, fdb   (pip install -r requirements.txt)
 import argparse
 import json
 import os
+import re
 import sys
 import datetime
 import unicodedata
@@ -91,8 +92,16 @@ DEFAULT_CONFIG = {
     #   < 200 -> au 5 superieur ; 200-999 -> au 10 superieur ; >= 1000 -> au 50 superieur.
     "arrondi_paliers": [[200, 5], [1000, 10], [None, 50]],
     "match_famille_par_intitule": True,  # associer la colonne "Famille" a une famille existante
-    "create_missing_familles": True,     # creer la famille (par son NOM) si aucune ne correspond
+    "create_missing_familles": False,    # creer une famille par son NOM si aucune ne correspond
+                                         # (defaut False : on choisit une famille existante)
     "calc_prix_achat_ttc": True,    # renseigner PRIXACHATTTC (= PRIXACHATHT, identiques)
+
+    # --- Rapprochement par designation (lignes sans code-barres) ------------
+    "match_par_designation": True,  # retrouver un article existant via le numero du libelle
+    "maj_prix_achat_seuil_pct": 40, # alerte si le prix achat varie de plus de X% (OCR)
+
+    # --- Tracabilite --------------------------------------------------------
+    "refdoc": "",                   # N° du bon fournisseur (stocke dans PIECE.REFDOC)
 
     # --- Numerotation NOPIECE / NOITEM --------------------------------------
     # Le logiciel numerote en MAX(NOPIECE)+1 (le generateur peut etre obsolete).
@@ -283,6 +292,133 @@ def read_excel(path, cfg):
     return lines
 
 
+def load_lines_json(path, cfg):
+    """Charge des lignes pre-analysees (memes cles que read_excel, depuis la
+    table editee de la GUI) et les assainit EXACTEMENT comme read_excel
+    (safe_text + to_float), pour que --lines et --excel produisent un import
+    identique. Cles supplementaires optionnelles : prix_vente, maj_prix_achat."""
+    with open(path, "r", encoding="utf-8") as fh:
+        raw = json.load(fh)
+    codec = codec_for(cfg.get("charset"))
+    txt = lambda v: safe_text(v, codec)
+    lines = []
+    for d in raw:
+        ref = d.get("ref_art")
+        if ref is None or str(ref).strip() == "":
+            continue
+        line = {
+            "ref_art":     txt(str(ref).strip()),
+            "designation": txt(str(d.get("designation")).strip()
+                               if d.get("designation") else str(ref).strip()),
+            "qte":         to_float(d.get("qte"), 0.0),
+            "prix":        to_float(d.get("prix"), 0.0),
+            "tva":         to_float(d.get("tva"), cfg["default_tva"]),
+            "famille":     txt(str(d.get("famille") or "").strip()),
+            "code_barres": txt(str(d.get("code_barres") or "").strip()),
+        }
+        pv = d.get("prix_vente")
+        if pv is not None and str(pv).strip() != "":
+            line["prix_vente"] = to_float(pv, None)
+        if d.get("maj_prix_achat"):
+            line["maj_prix_achat"] = True
+        lines.append(line)
+    return lines
+
+
+def load_lines(args, cfg):
+    """Charge les lignes depuis --excel OU --lines (une seule des deux)."""
+    if getattr(args, "lines", None):
+        if not os.path.isfile(args.lines):
+            sys.exit("Fichier de lignes introuvable : %s" % args.lines)
+        return load_lines_json(args.lines, cfg)
+    if not os.path.isfile(args.excel):
+        sys.exit("Fichier Excel introuvable : %s" % args.excel)
+    return read_excel(args.excel, cfg)
+
+
+# --------------------------------------------------------------------------- #
+#  Rapprochement par designation (lignes sans code-barres)
+# --------------------------------------------------------------------------- #
+_NUM_RE = re.compile(r"\d+")
+_SIZE_TOKEN_RE = re.compile(r"""^(
+        \d{1,3}\s?[x*]\s?\d{1,3}(\s?[x*]\s?\d{1,3})?  |   # 24x32, 10x15x5
+        a\d                                           |   # a4, a3, a5
+        \d{1,3}(f|gr?|g|ml|cl|l|cm|mm|m|p|w|v)         |   # 10f, 9gr, 500ml, 80g
+        \d{1,2}(eme|er|e)                                 # 1er, 2eme
+    )$""", re.VERBOSE)
+
+
+def number_tokens(text_norm):
+    """Numeros 'code' candidats : suites de >= 3 chiffres (70010, 3578).
+    Les tailles courtes (24, 10, 9) sont exclues -> evite les faux positifs."""
+    return {m.group(0) for m in _NUM_RE.finditer(text_norm) if len(m.group(0)) >= 3}
+
+
+def is_size_token(w):
+    return bool(_SIZE_TOKEN_RE.match(w))
+
+
+def word_tokens(text_norm):
+    """Mots significatifs (>= 3 lettres), hors tokens taille/format."""
+    out = []
+    for w in text_norm.split():
+        if is_size_token(w):
+            continue
+        ww = "".join(c for c in w if c.isalpha())
+        if len(ww) >= 3:
+            out.append(ww)
+    return out
+
+
+def build_article_index(cur):
+    """Index memoire des articles existants par numero-token (une requete).
+    Retourne (by_number, exact_refs, prix_achat_by_ref)."""
+    cur.execute("SELECT REF_ART, DESIGNATION, PRIXACHATHT FROM ARTICLE")
+    by_number, exact_refs, prix = {}, set(), {}
+    for ref, desig, pa in cur.fetchall():
+        exact_refs.add(ref)
+        prix[ref] = pa
+        dnorm = norm(desig)
+        nums = number_tokens(dnorm)
+        if not nums:
+            continue
+        lead = set(word_tokens(dnorm)[:3])
+        entry = (ref, desig, lead)
+        for n in nums:
+            by_number.setdefault(n, []).append(entry)
+    return by_number, exact_refs, prix
+
+
+def best_match_for_line(line, by_number, exact_refs, prix, min_score=0.60):
+    """Pour une ligne fournisseur, retourne le rapprochement {ref_exists,
+    match_ref, match_designation, match_score, match_prix_achat, status}."""
+    ref = line["ref_art"]
+    if ref in exact_refs:
+        return {"ref_exists": True, "match_ref": ref, "match_designation": None,
+                "match_score": 1.0, "match_prix_achat": prix.get(ref),
+                "status": "exact"}
+
+    src = norm(line.get("designation") or line["ref_art"])
+    src_nums = number_tokens(src)
+    src_lead = set(word_tokens(src)[:3])
+    miss = {"ref_exists": False, "match_ref": None, "match_designation": None,
+            "match_score": 0.0, "match_prix_achat": None, "status": "new"}
+    if not src_nums:
+        return miss
+    best = None
+    for n in src_nums:
+        for cand_ref, cand_desig, cand_lead in by_number.get(n, ()):
+            overlap = (len(src_lead & cand_lead) / len(src_lead)) if src_lead else 0.0
+            score = 0.55 + 0.45 * overlap
+            if best is None or score > best[0]:
+                best = (score, cand_ref, cand_desig)
+    if best and best[0] >= min_score:
+        return {"ref_exists": False, "match_ref": best[1],
+                "match_designation": best[2], "match_score": round(best[0], 3),
+                "match_prix_achat": prix.get(best[1]), "status": "matched"}
+    return miss
+
+
 # --------------------------------------------------------------------------- #
 #  Operations base de donnees
 # --------------------------------------------------------------------------- #
@@ -355,14 +491,49 @@ class Importer:
                 "INSERT INTO UNITE (CODE_UNITE, INTITULE, FACTEUR) VALUES (?, ?, 1)",
                 (code, safe_text(intitule, self.codec)[:30]))
 
-    def ensure_tiers(self, code, raison, categ=None):
-        """Cree le tiers s'il manque. 'categ' = 'F' (fournisseur) ou 'D' (depot)."""
-        if code and not self.exists("SELECT 1 FROM TIERS WHERE CODE_TIERS = ?", (code,)):
+    def fam_tiers_code(self, intitule_contains, default):
+        """Code de la famille-tiers dont l'intitule contient 'intitule_contains'
+        (ex: 'Fournisseur' -> 'FO', 'Dep' -> 'DP'). Repli sur 'default'. Cache.
+        Prefere le noeud dont l'intitule COMMENCE par le terme (plus specifique),
+        avant le premier noeud qui le CONTIENT (evite CF vs FO)."""
+        if not hasattr(self, "_famtiers_cache"):
+            self._famtiers_cache = {}
+        key = intitule_contains.lower()
+        if key not in self._famtiers_cache:
+            needle = intitule_contains.upper()
+            # D'abord : intitule qui commence par le terme (noeud feuille/specifique)
             self.cur.execute(
-                "INSERT INTO TIERS (CODE_TIERS, RAISON_SOCIALE, CATEGS, DATE_CREATION) "
-                "VALUES (?, ?, ?, ?)",
-                (code, safe_text(raison or code, self.codec)[:200], categ,
-                 datetime.datetime.now()))
+                "SELECT CODE_FAM_TIERS FROM FAM_TIERS "
+                "WHERE UPPER(INTITULE) STARTING WITH ? ROWS 1",
+                (needle,))
+            row = self.cur.fetchone()
+            if not row:
+                # Repli : intitule qui contient le terme
+                self.cur.execute(
+                    "SELECT CODE_FAM_TIERS FROM FAM_TIERS "
+                    "WHERE UPPER(INTITULE) CONTAINING ? ROWS 1",
+                    (needle,))
+                row = self.cur.fetchone()
+            self._famtiers_cache[key] = row[0] if row else default
+        return self._famtiers_cache[key]
+
+    def ensure_tiers(self, code, raison, role=None):
+        """Cree le tiers s'il manque. 'role' = 'fournisseur' ou 'depot' : fixe
+        CODE_FAM_TIERS sur la bonne famille-tiers (FO / DP) pour que le tiers
+        apparaisse dans les listes du logiciel."""
+        if not code or self.exists("SELECT 1 FROM TIERS WHERE CODE_TIERS = ?", (code,)):
+            return
+        if role == "depot":
+            fam = self.fam_tiers_code("dep", "DP")
+        elif role == "fournisseur":
+            fam = self.fam_tiers_code("fournisseur", "FO")
+        else:
+            fam = None
+        self.cur.execute(
+            "INSERT INTO TIERS (CODE_TIERS, CODE_FAM_TIERS, RAISON_SOCIALE, DATE_CREATION) "
+            "VALUES (?, ?, ?, ?)",
+            (code, fam, safe_text(raison or code, self.codec)[:200],
+             datetime.datetime.now()))
 
     def _load_famille_cache(self):
         if self._famille_cache is None:
@@ -382,16 +553,28 @@ class Importer:
             if not self.exists("SELECT 1 FROM FAMILLE WHERE CODEFAMILLE = ?", (code,)):
                 return code
 
+    def _root_famille(self):
+        """Code d'une famille racine existante (CODEFAMILLE_M NULL), pour y
+        rattacher les nouvelles familles afin qu'elles soient visibles dans
+        l'arbre du logiciel. Repli sur default_famille."""
+        default = self.cfg["default_famille"]
+        if self.exists("SELECT 1 FROM FAMILLE WHERE CODEFAMILLE = ?", (default,)):
+            return default
+        self.cur.execute(
+            "SELECT CODEFAMILLE FROM FAMILLE WHERE CODEFAMILLE_M IS NULL "
+            "ORDER BY CODEFAMILLE ROWS 1")
+        row = self.cur.fetchone()
+        return row[0] if row else None
+
     def create_famille(self, label):
         """Cree une famille portant le NOM (intitule) du libelle Excel, avec un
-        code genere automatiquement, rattachee a la famille par defaut."""
+        code genere automatiquement, rattachee a la racine et VISIBLE."""
         cfg = self.cfg
         code = self._next_famille_code()
-        parent = cfg["default_famille"] if self.exists(
-            "SELECT 1 FROM FAMILLE WHERE CODEFAMILLE = ?", (cfg["default_famille"],)) else None
+        parent = self._root_famille()
         self.cur.execute(
-            "INSERT INTO FAMILLE (CODEFAMILLE, CODEFAMILLE_M, INTITULE, TAUX_TVA) "
-            "VALUES (?, ?, ?, ?)",
+            "INSERT INTO FAMILLE (CODEFAMILLE, CODEFAMILLE_M, INTITULE, TAUX_TVA, "
+            " BOUTIQ_VISIBLE) VALUES (?, ?, ?, ?, 1)",
             (code, parent, safe_text(label, self.codec)[:50], cfg["default_tva"]))
         self._famille_cache[norm(label)] = code     # eviter les doublons
         return code
@@ -416,27 +599,37 @@ class Importer:
 
     # -- articles ---------------------------------------------------------
     def upsert_article(self, line):
-        """Cree l'article s'il n'existe pas. Retourne 'created' ou 'exists'."""
+        """Cree l'article s'il n'existe pas. Retourne 'created', 'exists' ou
+        'updated' (article existant dont on a mis a jour le prix d'achat)."""
         ref = line["ref_art"]
-        if self.exists("SELECT 1 FROM ARTICLE WHERE REF_ART = ?", (ref,)):
-            return "exists"
-
         cfg = self.cfg
-        codefamille = self.resolve_famille(line["famille"])
-        prix_achat_ht = line["prix"]              # prix de vente fournisseur = notre prix d'achat
         tva = line["tva"]
-        # Prix d'achat TTC = HT (identiques). Renseigne par defaut.
+        prix_achat_ht = line["prix"]              # prix de vente fournisseur = notre prix d'achat
         prix_achat_ttc = prix_achat_ht if cfg.get("calc_prix_achat_ttc", True) else None
 
-        # Prix de vente automatique = prix achat + marge, arrondi vers le haut.
-        # Laisse vide si desactive (vous fixez le prix vous-meme).
+        if self.exists("SELECT 1 FROM ARTICLE WHERE REF_ART = ?", (ref,)):
+            # Article existant : on n'y touche pas, SAUF si on demande
+            # explicitement la mise a jour du prix d'achat (recu a un nouveau prix).
+            if line.get("maj_prix_achat") and prix_achat_ht > 0:
+                self.cur.execute(
+                    "UPDATE ARTICLE SET PRIXACHATHT = ?, PRIXACHATTTC = ? WHERE REF_ART = ?",
+                    (prix_achat_ht, prix_achat_ttc, ref))
+                return "updated"
+            return "exists"
+
+        codefamille = self.resolve_famille(line["famille"])
+
+        # Prix de vente : valeur saisie a la main (override) sinon calcul auto.
         prix_vente_ht = prix_vente_ttc = None
-        if cfg.get("prix_vente_auto"):
+        override = line.get("prix_vente")
+        if override is not None and float(override) > 0:
+            prix_vente_ht = round(float(override), 4)
+        elif cfg.get("prix_vente_auto"):
             brut = prix_achat_ht * (1 + cfg.get("marge_pct", 50) / 100.0)
             prix_vente_ht = round_price_up(brut, cfg.get("arrondi_paliers",
-                                                          [[200, 5], [1000, 10], [None, 50]]))
-            prix_vente_ttc = (round(prix_vente_ht * (1 + tva / 100.0), 4)
-                              if prix_vente_ht is not None else None)
+                                                         [[200, 5], [1000, 10], [None, 50]]))
+        if prix_vente_ht is not None:
+            prix_vente_ttc = round(prix_vente_ht * (1 + tva / 100.0), 4)
 
         # Code-barres : le logiciel utilise la REFERENCE comme code scanne et
         # laisse CODE_BARRES vide (index UNIQUE). On ne le renseigne donc que
@@ -450,14 +643,17 @@ class Importer:
 
         # Unite de base : vide par defaut (comme le logiciel)
         unite = cfg.get("default_unite") or None
+        # Fournisseur de l'article = fournisseur du bon (chaque article retient
+        # d'ou il vient).
+        code_fourn = cfg.get("code_tiers") or None
 
         self.cur.execute(
             "INSERT INTO ARTICLE "
-            "(REF_ART, CODEFAMILLE, DESIGNATION, CODE_BARRES, CODE_BARRE, "
+            "(REF_ART, CODEFAMILLE, DESIGNATION, CODE_BARRES, CODE_BARRE, CODE_FOURN, "
             " PRIXACHATHT, PRIXACHATTTC, PRIXVENTEHT, PRIXVENTETTC, TAUX_TVA, "
             " CODE_UNITE_BASE, CODE_UNITE_AC, CODE_UNITE_VE, DATE_CREATION) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (ref, codefamille, line["designation"][:100], code_barres, code_barre,
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (ref, codefamille, line["designation"][:100], code_barres, code_barre, code_fourn,
              prix_achat_ht, prix_achat_ttc, prix_vente_ht, prix_vente_ttc, tva,
              unite, unite, unite, datetime.datetime.now()))
         return "created"
@@ -465,15 +661,16 @@ class Importer:
     # -- piece + lignes ---------------------------------------------------
     def create_piece(self, nopiece, date_piece):
         cfg = self.cfg
+        refdoc = safe_text(cfg.get("refdoc") or "", self.codec)[:255] or None
         self.cur.execute(
             "INSERT INTO PIECE "
-            "(NOPIECE, CODE_TYPE_PIECE, CODE_TIERS, CODE_DEPOT, DATEPIECE, "
+            "(NOPIECE, CODE_TYPE_PIECE, CODE_TIERS, CODE_DEPOT, DATEPIECE, REFDOC, "
             " ETAT, ANNULEE, COEFF, COEFF_TR, MONTANT, MONTANTHT, MONTANTTTC, TVA, "
             " USERNAME) "
-            "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, 0, 0, 0, 0, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, 0, 0, 0, ?)",
             (nopiece, cfg["code_type_piece"],
              cfg["code_tiers"] or None, cfg["code_depot"] or None,
-             date_piece, cfg.get("etat") or None,
+             date_piece, refdoc, cfg.get("etat") or None,
              self.coeff_piece, self.coeff_piece_tr, cfg.get("user")))
         return nopiece
 
@@ -521,36 +718,260 @@ def connect(cfg):
     return fdb.connect(**kwargs)
 
 
+def _write_json(out_path, data):
+    with open(out_path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, ensure_ascii=False)
+
+
+def mode_match(cfg, lines, out_path):
+    """Calcule les correspondances par designation et ecrit le JSON augmente."""
+    auto = cfg.get("match_par_designation", True)
+    con = connect(cfg)
+    try:
+        cur = con.cursor()
+        by_number, exact_refs, prix = build_article_index(cur)
+        min_score = float(cfg.get("match_min_score", 0.60))
+        result = []
+        for ln in lines:
+            if auto:
+                m = best_match_for_line(ln, by_number, exact_refs, prix, min_score)
+            elif ln["ref_art"] in exact_refs:
+                m = {"ref_exists": True, "match_ref": ln["ref_art"],
+                     "match_designation": None, "match_score": 1.0,
+                     "match_prix_achat": prix.get(ln["ref_art"]), "status": "exact"}
+            else:
+                m = {"ref_exists": False, "match_ref": None, "match_designation": None,
+                     "match_score": 0.0, "match_prix_achat": None, "status": "new"}
+            row = dict(ln); row.update(m); result.append(row)
+    finally:
+        con.close()
+    _write_json(out_path, result)
+    ne = sum(r["status"] == "exact" for r in result)
+    nm = sum(r["status"] == "matched" for r in result)
+    nn = sum(r["status"] == "new" for r in result)
+    print("Rapprochement : exact=%d matched=%d new=%d -> %s" % (ne, nm, nn, out_path))
+
+
+def mode_check_dup(cfg, lines, out_path):
+    """Cherche des bons de reception ACTIFS deja presents (meme N° de bon, ou
+    meme fournisseur + meme total), pour eviter un double import."""
+    total_ht = round(sum(ln["qte"] * ln["prix"] for ln in lines), 2)
+    refdoc = (cfg.get("refdoc") or "").strip()
+    tiers = (cfg.get("code_tiers") or "").strip()
+    con = connect(cfg)
+    try:
+        cur = con.cursor()
+        dups = []
+        seen = set()
+        if refdoc:
+            cur.execute(
+                "SELECT NOPIECE, REF_PIECE, DATEPIECE, MONTANTHT, REFDOC, CODE_TIERS "
+                "FROM PIECE WHERE CODE_TYPE_PIECE = ? AND ANNULEE = 1 AND REFDOC = ?",
+                (cfg["code_type_piece"], refdoc))
+            for row in cur.fetchall():
+                seen.add(row[0]); dups.append(_dup_row(row, "meme N° de bon"))
+        if tiers:
+            cur.execute(
+                "SELECT NOPIECE, REF_PIECE, DATEPIECE, MONTANTHT, REFDOC, CODE_TIERS "
+                "FROM PIECE WHERE CODE_TYPE_PIECE = ? AND ANNULEE = 1 AND CODE_TIERS = ? "
+                "AND ABS(COALESCE(MONTANTHT,0) - ?) <= 1",
+                (cfg["code_type_piece"], tiers, total_ht))
+            for row in cur.fetchall():
+                if row[0] not in seen:
+                    seen.add(row[0]); dups.append(_dup_row(row, "meme fournisseur + meme total"))
+    finally:
+        con.close()
+    _write_json(out_path, {"total_ht": total_ht, "duplicates": dups})
+    print("Doublons potentiels : %d -> %s" % (len(dups), out_path))
+
+
+def _dup_row(row, motif):
+    return {"nopiece": row[0], "ref_piece": row[1],
+            "date": str(row[2]) if row[2] else None,
+            "montant_ht": row[3], "refdoc": row[4], "code_tiers": row[5], "motif": motif}
+
+
+def mode_list_familles(cfg, out_path):
+    """Liste les familles existantes, ordonnees en arbre (parent avant enfants)."""
+    con = connect(cfg)
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT CODEFAMILLE, CODEFAMILLE_M, INTITULE FROM FAMILLE")
+        rows = cur.fetchall()
+    finally:
+        con.close()
+    children = {}
+    intitule = {}
+    for code, parent, lib in rows:
+        intitule[code] = lib or code
+        children.setdefault(parent, []).append(code)
+    out = []
+
+    def walk(parent, depth):
+        for code in sorted(children.get(parent, []), key=lambda c: norm(intitule.get(c, c))):
+            out.append({"code": code, "intitule": intitule.get(code, code), "depth": depth})
+            walk(code, depth + 1)
+    walk(None, 0)
+    # familles dont le parent n'existe pas (orphelines) : ajoutees a plat
+    placed = {o["code"] for o in out}
+    for code in intitule:
+        if code not in placed:
+            out.append({"code": code, "intitule": intitule[code], "depth": 0})
+    _write_json(out_path, out)
+    print("Familles : %d -> %s" % (len(out), out_path))
+
+
+def mode_list_tiers(cfg, out_path):
+    """Liste fournisseurs (sous-arbre FO) et depots (sous-arbre DP)."""
+    con = connect(cfg)
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT CODE_FAM_TIERS, CODE_FAM_TIERS_M, INTITULE FROM FAM_TIERS")
+        fam = cur.fetchall()
+        kids = {}
+        root_by_intit = {}
+        for code, parent, lib in fam:
+            kids.setdefault(parent, []).append(code)
+            if lib:
+                root_by_intit[code] = lib
+
+        def descendants(root):
+            seen, stack = set(), [root]
+            while stack:
+                c = stack.pop()
+                if c in seen:
+                    continue
+                seen.add(c)
+                stack.extend(kids.get(c, []))
+            return seen
+
+        def find_root(contains, default):
+            # Prefere le noeud dont l'intitule COMMENCE par le mot-cle (plus specifique)
+            # plutot qu'un noeud parent dont l'intitule le CONTIENT (ex: CF vs FO).
+            starts = [(code, lib) for code, _p, lib in fam
+                      if lib and lib.upper().startswith(contains)]
+            if starts:
+                return starts[0][0]
+            for code, _p, lib in fam:
+                if lib and contains in lib.upper():
+                    return code
+            return default
+        fo = find_root("FOURNISSEUR", "FO")
+        dp = find_root("DEP", "DP")
+        fo_set, dp_set = descendants(fo), descendants(dp)
+
+        def fetch(fam_codes):
+            if not fam_codes:
+                return []
+            qs = ",".join("?" * len(fam_codes))
+            cur.execute("SELECT CODE_TIERS, RAISON_SOCIALE FROM TIERS "
+                        "WHERE CODE_FAM_TIERS IN (%s) ORDER BY RAISON_SOCIALE" % qs,
+                        tuple(fam_codes))
+            return [{"code": c, "raison": r or c} for c, r in cur.fetchall()]
+        data = {"fournisseurs": fetch(fo_set), "depots": fetch(dp_set),
+                "code_fam_fournisseur": fo, "code_fam_depot": dp}
+    finally:
+        con.close()
+    _write_json(out_path, data)
+    print("Fournisseurs : %d, Depots : %d -> %s"
+          % (len(data["fournisseurs"]), len(data["depots"]), out_path))
+
+
+def mode_cancel_piece(cfg, nopiece):
+    """Annule un bon (ANNULEE=0) : le trigger UPDATE_PIECE repercute sur les
+    items et le stock est repris (annulation native du logiciel)."""
+    con = connect(cfg)
+    try:
+        cur = con.cursor()
+        cur.execute("SELECT CODE_TYPE_PIECE, ANNULEE FROM PIECE WHERE NOPIECE = ?", (nopiece,))
+        row = cur.fetchone()
+        if not row:
+            con.close(); sys.exit("Bon introuvable : NOPIECE=%s" % nopiece)
+        cur.execute("UPDATE PIECE SET ANNULEE = 0 WHERE NOPIECE = ?", (nopiece,))
+        con.commit()
+        print("Bon NOPIECE=%s annule (stock repris)." % nopiece)
+    except Exception as exc:
+        con.rollback()
+        print("ECHEC annulation : %s" % exc, file=sys.stderr); sys.exit(1)
+    finally:
+        con.close()
+
+
+def make_template(path):
+    """Ecrit un modele Excel avec les colonnes reconnues par l'outil."""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Bon"
+    ws.append(["Ref. Art.", "Désignation", "QTE", "Prix HT", "TVA", "Famille", "Code barres"])
+    ws.append(["", "ensemble kit tracage 70010", 10, 120, 0, "SCOLAIRE", ""])
+    wb.save(path)
+    print("Modele Excel cree : %s" % path)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Importe un Excel fournisseur comme Bon de reception dans la base Firebird.")
     ap.add_argument("--config", help="Fichier de configuration JSON")
-    ap.add_argument("--excel", required=True, help="Fichier Excel du fournisseur (.xlsx)")
+    src = ap.add_mutually_exclusive_group()
+    src.add_argument("--excel", help="Fichier Excel du fournisseur (.xlsx)")
+    src.add_argument("--lines", help="Fichier JSON de lignes pre-analysees (table GUI editee)")
     ap.add_argument("--db", help="Chemin du .FDB (surcharge la config)")
     ap.add_argument("--date", help="Date du bon (AAAA-MM-JJ). Defaut : aujourd'hui.")
     ap.add_argument("--code-tiers", help="Code fournisseur (surcharge la config)")
+    ap.add_argument("--refdoc", help="N° du bon fournisseur (surcharge la config)")
     ap.add_argument("--dry-run", action="store_true",
                     help="Simulation : affiche le resultat sans rien ecrire en base.")
+    # Modes auxiliaires (lecture seule sauf --cancel-piece)
+    ap.add_argument("--match", action="store_true", help="Mode rapprochement -> --out")
+    ap.add_argument("--check-dup", action="store_true", help="Verifie les doublons -> --out")
+    ap.add_argument("--list-familles", action="store_true", help="Liste les familles -> --out")
+    ap.add_argument("--list-tiers", action="store_true", help="Liste fournisseurs/depots -> --out")
+    ap.add_argument("--cancel-piece", help="Annule le bon NOPIECE donne (ANNULEE=0)")
+    ap.add_argument("--make-template", help="Cree un modele Excel au chemin donne")
+    ap.add_argument("--out", help="Fichier JSON de sortie (modes --match/--check-dup/--list-*)")
     args = ap.parse_args()
+
+    # Modes ne necessitant pas de lignes
+    if args.make_template:
+        make_template(args.make_template); return
 
     cfg = load_config(args.config)
     if args.db:
         cfg["database"] = args.db
     if args.code_tiers is not None:
         cfg["code_tiers"] = args.code_tiers
+    if args.refdoc is not None:
+        cfg["refdoc"] = args.refdoc
+
+    if args.cancel_piece:
+        mode_cancel_piece(cfg, args.cancel_piece); return
+    if args.list_familles:
+        if not args.out: sys.exit("--list-familles requiert --out.")
+        mode_list_familles(cfg, args.out); return
+    if args.list_tiers:
+        if not args.out: sys.exit("--list-tiers requiert --out.")
+        mode_list_tiers(cfg, args.out); return
+
+    # Modes / import necessitant des lignes
+    if not args.excel and not args.lines:
+        sys.exit("Indiquez --excel ou --lines (ou un mode --list-*/--cancel-piece/--make-template).")
+    lines = load_lines(args, cfg)
+    if not lines:
+        sys.exit("Aucune ligne d'article trouvee.")
+
+    if args.match:
+        if not args.out: sys.exit("--match requiert --out.")
+        mode_match(cfg, lines, args.out); return
+    if args.check_dup:
+        if not args.out: sys.exit("--check-dup requiert --out.")
+        mode_check_dup(cfg, lines, args.out); return
+
+    print("Lignes lues dans l'Excel : %d" % len(lines))
 
     if args.date:
         date_piece = datetime.datetime.strptime(args.date, "%Y-%m-%d")
     else:
         date_piece = datetime.datetime.now()
-
-    # 1) Lecture de l'Excel
-    if not os.path.isfile(args.excel):
-        sys.exit("Fichier Excel introuvable : %s" % args.excel)
-    lines = read_excel(args.excel, cfg)
-    if not lines:
-        sys.exit("Aucune ligne d'article trouvee dans l'Excel.")
-    print("Lignes lues dans l'Excel : %d" % len(lines))
 
     # 2) Connexion + import (transaction unique)
     con = connect(cfg)
@@ -560,8 +981,8 @@ def main():
         imp.ensure_famille(cfg["default_famille"], cfg["default_famille_intitule"])
         imp.ensure_unite(cfg.get("default_unite"), cfg["default_unite_intitule"])
         if cfg.get("create_missing_tiers"):
-            imp.ensure_tiers(cfg.get("code_tiers"), cfg.get("raison_sociale"), "F")
-            imp.ensure_tiers(cfg.get("code_depot"), cfg.get("code_depot"), "D")
+            imp.ensure_tiers(cfg.get("code_tiers"), cfg.get("raison_sociale"), "fournisseur")
+            imp.ensure_tiers(cfg.get("code_depot"), cfg.get("code_depot"), "depot")
 
         # numerotation collision-safe (MAX existant ou generateur)
         nopiece = str(imp.next_base("NEXTPIECE", "PIECE", "NOPIECE") + 1)
@@ -569,11 +990,16 @@ def main():
 
         imp.create_piece(nopiece, date_piece)
 
-        created, existing = [], []
+        created, existing, updated = [], [], []
         montant_ht = tva_tot = 0.0
         for line in lines:
             state = imp.upsert_article(line)
-            (created if state == "created" else existing).append(line["ref_art"])
+            if state == "created":
+                created.append(line["ref_art"])
+            elif state == "updated":
+                updated.append(line["ref_art"])
+            else:
+                existing.append(line["ref_art"])
             item_no += 1
             imp.add_item(str(item_no), nopiece, line, date_piece)
             ht = line["qte"] * line["prix"]
@@ -597,6 +1023,7 @@ def main():
         print("Articles crees   : %d  %s"
               % (len(created), created if len(created) <= 20 else created[:20] + ["..."]))
         print("Articles existants : %d" % len(existing))
+        print("Articles mis a jour (prix achat) : %d" % len(updated))
         print("Total HT  : %.2f" % montant_ht)
         print("Total TVA : %.2f" % tva_tot)
         print("Total TTC : %.2f" % montant_ttc)
