@@ -395,6 +395,78 @@ class ArticleRepository:
             self.con.rollback()
             self._pending = False
 
+    # -- tarifs -----------------------------------------------------------
+    def load_tarif_types(self):
+        """Renvoie [(code, intitule), ...] depuis TYPE_TARIF, ou [] si absente."""
+        cur = self.con.cursor()
+        try:
+            cur.execute(
+                "SELECT TRIM(CODE_TYPE_TARIF), TRIM(INTITULE) "
+                "FROM TYPE_TARIF ORDER BY CODE_TYPE_TARIF")
+            return [(r[0] or "", r[1] or "") for r in cur.fetchall()]
+        except Exception:                              # noqa: BLE001
+            return []
+
+    def load_tarifs(self, refs):
+        """Renvoie {ref: {type_code: prix}} depuis la table TARIF."""
+        if not refs:
+            return {}
+        cur = self.con.cursor()
+        try:
+            placeholders = ",".join("?" for _ in refs)
+            cur.execute(
+                "SELECT TRIM(REF_ART), TRIM(CODE_TYPE_TARIF), TARIF_P_QTE "
+                f"FROM TARIF WHERE REF_ART IN ({placeholders})",
+                list(refs))
+            result = {}
+            for ref, type_code, price in cur.fetchall():
+                result.setdefault(ref, {})[type_code] = price
+            return result
+        except Exception:                              # noqa: BLE001
+            return {}
+
+    def update_tarifs(self, tarif_changes):
+        """Ecrit les prix de tarif (sans committer).
+
+        tarif_changes : liste de (ref0, type_code, prix).
+        UPDATE si la ligne existe ; INSERT (generateur NEXTTARIF) sinon.
+        prix=None -> suppression de la ligne.
+        """
+        from editor_logic import parse_number
+        cur = self.con.cursor()
+        for ref, type_code, price in tarif_changes:
+            cur.execute(
+                "SELECT CODE_TARIF FROM TARIF "
+                "WHERE CODE_TYPE_TARIF = ? AND REF_ART = ?",
+                (type_code, ref))
+            existing = cur.fetchone()
+            pv = parse_number(price)
+            try:
+                if existing is not None:
+                    if pv is None:
+                        cur.execute(
+                            "DELETE FROM TARIF "
+                            "WHERE CODE_TYPE_TARIF = ? AND REF_ART = ?",
+                            (type_code, ref))
+                    else:
+                        cur.execute(
+                            "UPDATE TARIF SET TARIF_P_QTE = ? "
+                            "WHERE CODE_TYPE_TARIF = ? AND REF_ART = ?",
+                            (pv, type_code, ref))
+                elif pv is not None:
+                    cur.execute("SELECT GEN_ID(NEXTTARIF, 1) FROM RDB$DATABASE")
+                    new_id = cur.fetchone()[0]
+                    cur.execute(
+                        "INSERT INTO TARIF "
+                        "(CODE_TARIF, CODE_TYPE_TARIF, REF_ART, TARIF_P_QTE) "
+                        "VALUES (?, ?, ?, ?)",
+                        (new_id, type_code, ref, pv))
+            except Exception as exc:                   # noqa: BLE001
+                raise DBError(
+                    "Echec tarif '%s' / ref '%s' : %s" % (type_code, ref, exc)
+                ) from exc
+        self._pending = True
+
 
 # --------------------------------------------------------------------------- #
 #  Depot de DEMONSTRATION (sans Firebird) — pour tester l'interface
@@ -506,3 +578,12 @@ class DemoRepository:
 
     def rollback(self):
         self._staged = None
+
+    def load_tarif_types(self):
+        return []
+
+    def load_tarifs(self, refs):
+        return {}
+
+    def update_tarifs(self, tarif_changes):
+        pass

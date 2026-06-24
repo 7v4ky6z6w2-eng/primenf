@@ -271,7 +271,19 @@ class BulkEditorApp(ttk.Frame):
         self.row_by_iid = {}      # iid Treeview -> dict
         self.pending = {}         # ref0 -> {colonne_logique: nouvelle_valeur}
         self.new_familles = {}    # code -> (intitule, tva) familles a creer au commit
+        self.pending_tarifs = {}  # ref0 -> {type_code: prix}
+        self.tarif_data = {}      # ref0 -> {type_code: prix} charge depuis la base
+        self._sort_col = None     # colonne de tri active (None = ordre naturel)
+        self._sort_rev = False    # True = descendant
+
         self.columns = repo.display_columns()
+        try:
+            self.tarif_types = repo.load_tarif_types()
+        except Exception:         # noqa: BLE001
+            self.tarif_types = []
+        self.tarif_labels = {"__tarif_%s__" % c: n for c, n in self.tarif_types}
+        for code, _ in self.tarif_types:
+            self.columns.append("__tarif_%s__" % code)
 
         self._build_toolbar()
         self._build_table()
@@ -283,9 +295,10 @@ class BulkEditorApp(ttk.Frame):
     def change_database(self):
         """Rouvre l'ecran de connexion et reconstruit l'application sur la base
         choisie (le schema peut differer : on recree toute l'interface)."""
-        if (self.pending or self.new_familles) and not messagebox.askyesno(
-                APP_TITLE, "Des modifications ne sont pas enregistrees. "
-                "Changer de base et les abandonner ?"):
+        if (self.pending or self.new_familles or self.pending_tarifs) and \
+                not messagebox.askyesno(
+                    APP_TITLE, "Des modifications ne sont pas enregistrees. "
+                    "Changer de base et les abandonner ?"):
             return
         start_cfg = getattr(self.repo, "cfg", None) or dict(article_db.DEFAULT_CONFIG)
         repo, cfg = prompt_connection(self.master, start_cfg)
@@ -338,8 +351,11 @@ class BulkEditorApp(ttk.Frame):
                   Cols.CODE_BARRE: 110, Cols.PV_HT: 90, Cols.PV_TTC: 90,
                   Cols.TVA: 60, Cols.PA_HT: 90, Cols.FAMILLE: 110}
         for c in self.columns:
-            self.tree.heading(c, text=Cols.LABELS.get(c, c))
-            anchor = "e" if c in Cols.NUMERIC else "w"
+            label = Cols.LABELS.get(c, self.tarif_labels.get(c, c))
+            self.tree.heading(c, text=label,
+                              command=lambda col=c: self._sort_by(col))
+            is_num = c in Cols.NUMERIC or c.startswith("__tarif_")
+            anchor = "e" if is_num else "w"
             self.tree.column(c, width=widths.get(c, 100), anchor=anchor, stretch=False)
         self.tree.tag_configure("modif", background="#fff3bf")     # jaune = modifie
         self.tree.tag_configure("editable_hint", background="#ffffff")
@@ -469,12 +485,15 @@ class BulkEditorApp(ttk.Frame):
 
     # -- chargement / affichage ------------------------------------------
     def reload(self):
-        if (self.pending or self.new_familles) and not messagebox.askyesno(
-                APP_TITLE,
-                "Des modifications ne sont pas enregistrees. Les abandonner et recharger ?"):
+        if (self.pending or self.new_familles or self.pending_tarifs) and \
+                not messagebox.askyesno(
+                    APP_TITLE,
+                    "Des modifications ne sont pas enregistrees. "
+                    "Les abandonner et recharger ?"):
             return
         self.pending.clear()
         self.new_familles.clear()
+        self.pending_tarifs.clear()
         try:
             self.repo.rollback()                 # annule toute ecriture non validee
         except Exception:                        # noqa: BLE001
@@ -484,11 +503,18 @@ class BulkEditorApp(ttk.Frame):
         except DBError as exc:
             messagebox.showerror(APP_TITLE, str(exc))
             return
+        refs = [r.get("__ref0__") for r in self.rows if r.get("__ref0__")]
+        try:
+            self.tarif_data = self.repo.load_tarifs(refs)
+        except Exception:                        # noqa: BLE001
+            self.tarif_data = {}
         self._populate()
         self._refresh_famille_combo()
         self._update_save_button()
+        self._update_sort_indicators()
 
     def _populate(self):
+        self._apply_sort()
         self.tree.delete(*self.tree.get_children())
         self.row_by_iid.clear()
         for rec in self.rows:
@@ -503,9 +529,16 @@ class BulkEditorApp(ttk.Frame):
 
     def _row_values(self, rec):
         vals = []
+        ref0 = rec.get("__ref0__")
         for c in self.columns:
-            v = rec.get(c)
-            vals.append(fmt_price(v) if c in Cols.NUMERIC else ("" if v is None else str(v)))
+            if c.startswith("__tarif_"):
+                type_code = c[8:-2]
+                v = self.pending_tarifs.get(ref0, {}).get(
+                    type_code, self.tarif_data.get(ref0, {}).get(type_code))
+                vals.append(fmt_price(v) if v is not None else "")
+            else:
+                v = rec.get(c)
+                vals.append(fmt_price(v) if c in Cols.NUMERIC else ("" if v is None else str(v)))
         return vals
 
     def _insert_row(self, rec):
@@ -514,7 +547,8 @@ class BulkEditorApp(ttk.Frame):
     def _refresh_row(self, iid, rec):
         self.tree.item(iid, values=self._row_values(rec))
         ref0 = rec.get("__ref0__")
-        self.tree.item(iid, tags=("modif",) if ref0 in self.pending else ())
+        modified = ref0 in self.pending or ref0 in self.pending_tarifs
+        self.tree.item(iid, tags=("modif",) if modified else ())
 
     # -- edition d'une cellule (double-clic) -----------------------------
     def _on_double_click(self, event):
@@ -526,10 +560,34 @@ class BulkEditorApp(ttk.Frame):
             return
         col_idx = int(col_id[1:]) - 1
         logical = self.columns[col_idx]
+        rec = self.row_by_iid[iid]
+
+        # -- colonne tarif (prix manuel par type de tarif) ----------------
+        if logical.startswith("__tarif_"):
+            type_code = logical[8:-2]
+            ref0 = rec.get("__ref0__")
+            old = self.pending_tarifs.get(ref0, {}).get(
+                type_code, self.tarif_data.get(ref0, {}).get(type_code))
+            x, y, w, h = self.tree.bbox(iid, col_id)
+            edit = tk.Entry(self.tree)
+            edit.insert(0, fmt_price(old) if old is not None else "")
+            edit.select_range(0, "end")
+            edit.focus_set()
+            edit.place(x=x, y=y, width=w, height=h)
+
+            def commit_tarif(_=None, tc=type_code):
+                new = edit.get()
+                edit.destroy()
+                self._set_tarif_cell(iid, rec, tc, new)
+
+            edit.bind("<Return>", commit_tarif)
+            edit.bind("<Escape>", lambda e: edit.destroy())
+            edit.bind("<FocusOut>", commit_tarif)
+            return
+
         if logical not in Cols.EDITABLE:
             messagebox.showinfo(APP_TITLE, "Cette colonne n'est pas modifiable ici.")
             return
-        rec = self.row_by_iid[iid]
         x, y, w, h = self.tree.bbox(iid, col_id)
         old = rec.get(logical)
         edit = tk.Entry(self.tree)
@@ -577,6 +635,24 @@ class BulkEditorApp(ttk.Frame):
         self._refresh_row(iid, rec)
         self._update_save_button()
 
+    def _set_tarif_cell(self, iid, rec, type_code, new_value):
+        """Valide et met en attente une modification de prix tarif."""
+        new_value = new_value.strip()
+        ref0 = rec.get("__ref0__")
+        if new_value == "":
+            if ref0 in self.pending_tarifs:
+                self.pending_tarifs[ref0].pop(type_code, None)
+                if not self.pending_tarifs[ref0]:
+                    del self.pending_tarifs[ref0]
+        else:
+            val = parse_number(new_value)
+            if val is None:
+                messagebox.showwarning(APP_TITLE, "Valeur numerique invalide : %r" % new_value)
+                return
+            self.pending_tarifs.setdefault(ref0, {})[type_code] = val
+        self._refresh_row(iid, rec)
+        self._update_save_button()
+
     def _sync_price(self, rec, logical, value):
         """Maintient PRIXVENTEHT et PRIXVENTETTC IDENTIQUES.
 
@@ -609,39 +685,55 @@ class BulkEditorApp(ttk.Frame):
         self.pending.setdefault(ref0, {})[logical] = value
 
     def _update_save_button(self):
-        extra = (" +%d fam." % len(self.new_familles)) if self.new_familles else ""
-        self.save_btn.config(text="Enregistrer (%d)%s" % (len(self.pending), extra))
+        n_tar = sum(len(v) for v in self.pending_tarifs.values())
+        extra_tar = (" +%d tarif(s)" % n_tar) if n_tar else ""
+        extra_fam = (" +%d fam." % len(self.new_familles)) if self.new_familles else ""
+        self.save_btn.config(
+            text="Enregistrer (%d)%s%s" % (len(self.pending), extra_tar, extra_fam))
 
     def discard_changes(self):
-        if not self.pending and not self.new_familles:
+        if not self.pending and not self.new_familles and not self.pending_tarifs:
             return
+        n_total = len(self.pending) + sum(len(v) for v in self.pending_tarifs.values())
         if messagebox.askyesno(APP_TITLE, "Abandonner les %d modification(s) en attente ?"
-                               % len(self.pending)):
+                               % n_total):
             self.reload()
 
     def commit_changes(self):
-        if not self.pending and not self.new_familles:
+        if not self.pending and not self.new_familles and not self.pending_tarifs:
             messagebox.showinfo(APP_TITLE, "Aucune modification a enregistrer.")
             return
         changes = [{"ref0": ref0, "values": vals} for ref0, vals in self.pending.items()]
         new_fam = [(code, name, tva) for code, (name, tva) in self.new_familles.items()]
+        tarif_changes = [(ref0, tc, price)
+                         for ref0, tmap in self.pending_tarifs.items()
+                         for tc, price in tmap.items()]
         detail = self._summary(changes)
         if new_fam:
             detail += "\n\nNouvelles familles : " + ", ".join(
                 "%s (%s)" % (c, n) for c, n, _ in new_fam)
+        if tarif_changes:
+            detail += "\n\nTarifs modifies : %d prix" % len(tarif_changes)
+        n_items = len(changes) + len(tarif_changes)
         if not messagebox.askyesno(APP_TITLE,
-                                   "Enregistrer %d article(s) modifie(s) ?\n\n%s"
-                                   % (len(changes), detail)):
+                                   "Enregistrer %d modification(s) ?\n\n%s"
+                                   % (n_items, detail)):
             return
         try:
             n = self.repo.update_rows(changes, new_familles=new_fam)
+            if tarif_changes:
+                self.repo.update_tarifs(tarif_changes)
             self.repo.commit()
         except DBError as exc:
             self.repo.rollback()
             messagebox.showerror(APP_TITLE, "Echec — rien n'a ete enregistre.\n\n%s" % exc)
             return
-        messagebox.showinfo(APP_TITLE, "%d article(s) enregistre(s)%s."
-                            % (n, (" + %d famille(s)" % len(new_fam)) if new_fam else ""))
+        info = "%d article(s) enregistre(s)" % n
+        if new_fam:
+            info += " + %d famille(s)" % len(new_fam)
+        if tarif_changes:
+            info += " + %d tarif(s)" % len(tarif_changes)
+        messagebox.showinfo(APP_TITLE, info + ".")
         self.reload()
 
     def _summary(self, changes, limit=12):
@@ -837,6 +929,55 @@ class BulkEditorApp(ttk.Frame):
             self._refresh_row(iid, self.row_by_iid[iid])
         self._update_save_button()
 
+    # -- tri par colonne --------------------------------------------------
+    def _sort_by(self, col):
+        """Clic sur un en-tete de colonne : bascule tri asc / desc."""
+        if self._sort_col == col:
+            self._sort_rev = not self._sort_rev
+        else:
+            self._sort_col = col
+            self._sort_rev = False
+        self._apply_sort()
+        self._populate()
+        self._update_sort_indicators()
+
+    def _apply_sort(self):
+        """Trie self.rows en memoire selon la colonne active (sans repeupler)."""
+        if self._sort_col is None:
+            return
+        col = self._sort_col
+        is_num = col in Cols.NUMERIC or col.startswith("__tarif_")
+
+        def key(rec):
+            if col.startswith("__tarif_"):
+                type_code = col[8:-2]
+                v = self.tarif_data.get(rec.get("__ref0__") or "", {}).get(type_code)
+            else:
+                v = rec.get(col)
+            if is_num:
+                try:
+                    return (0, float(v)) if v is not None else (1, 0.0)
+                except (ValueError, TypeError):
+                    return (1, 0.0)
+            return str(v or "").lower()
+
+        try:
+            self.rows.sort(key=key, reverse=self._sort_rev)
+        except Exception:             # noqa: BLE001
+            pass
+
+    def _update_sort_indicators(self):
+        """Met a jour les fleches ▲/▼ dans les en-tetes de colonnes."""
+        if not hasattr(self, "tree"):
+            return
+        for c in self.columns:
+            base = Cols.LABELS.get(c, self.tarif_labels.get(c, c))
+            if c == self._sort_col:
+                label = base + (" ▼" if self._sort_rev else " ▲")
+            else:
+                label = base
+            self.tree.heading(c, text=label)
+
     # -- import / export --------------------------------------------------
     def export_csv(self):
         path = filedialog.asksaveasfilename(
@@ -912,10 +1053,11 @@ class BulkEditorApp(ttk.Frame):
 
     def _populate_keep_pending(self):
         self._populate()
-        # re-applique le surlignage des lignes modifiees
         for iid, rec in self.row_by_iid.items():
-            if rec.get("__ref0__") in self.pending:
+            ref0 = rec.get("__ref0__")
+            if ref0 in self.pending or ref0 in self.pending_tarifs:
                 self._refresh_row(iid, rec)
+        self._update_sort_indicators()
 
 
 # --------------------------------------------------------------------------- #
@@ -1091,8 +1233,11 @@ def main(argv=None):
 
 def _on_close(root):
     app = getattr(root, "_app", None)
-    if app is not None and (app.pending or app.new_familles) and not messagebox.askyesno(
-            APP_TITLE, "Des modifications ne sont pas enregistrees. Quitter quand meme ?"):
+    if app is not None and \
+            (app.pending or app.new_familles or app.pending_tarifs) and \
+            not messagebox.askyesno(
+                APP_TITLE,
+                "Des modifications ne sont pas enregistrees. Quitter quand meme ?"):
         return
     try:
         if app is not None:
