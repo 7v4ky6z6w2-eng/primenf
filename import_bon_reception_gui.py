@@ -432,6 +432,9 @@ def _window_class():
             self.f_default_unite = QLineEdit(); self.f_default_unite.setPlaceholderText("Vide = aucune unite")
             self.f_default_unite_int = QLineEdit("Unite")
             self.f_barcode_ref = QCheckBox("Recopier la reference dans CODE_BARRES")
+            self.f_maj_code_barres = QCheckBox(
+                "Importer les codes-barres (visibles dans la fiche article), y compris sur les articles existants")
+            self.f_maj_code_barres.setChecked(True)
             self.f_reserved = QSpinBox(); self.f_reserved.setRange(0, 2_000_000_000); self.f_reserved.setValue(1_000_000)
             self.f_maj_seuil = QDoubleSpinBox(); self.f_maj_seuil.setRange(0, 1000)
             self.f_maj_seuil.setDecimals(0); self.f_maj_seuil.setValue(40); self.f_maj_seuil.setSuffix(" %")
@@ -538,6 +541,12 @@ def _window_class():
             self.btn_template = QPushButton("Creer un modele Excel")
             self.btn_template.clicked.connect(self.make_template_action)
 
+            self.btn_sync_bc = QPushButton("Synchroniser codes-barres")
+            self.btn_sync_bc.setToolTip(
+                "Reparer les articles DEJA importes : rend leurs codes-barres "
+                "visibles dans la fiche article (copie vers EQUIV_CBARRES).")
+            self.btn_sync_bc.clicked.connect(self.run_sync_barcodes_action)
+
             self.btn_repair = QPushButton("Reparer l'arabe")
             self.btn_repair.setToolTip(
                 "Corriger sur place les noms arabes deformes par un import en UTF8 "
@@ -556,6 +565,7 @@ def _window_class():
             actions.addStretch(1)
             actions.addWidget(self.btn_undo)
             actions.addWidget(self.btn_template)
+            actions.addWidget(self.btn_sync_bc)
             actions.addWidget(self.btn_repair); actions.addWidget(self.btn_clean)
             actions.addWidget(self.btn_cancel)
             root.addLayout(actions)
@@ -640,6 +650,7 @@ def _window_class():
             f.addRow("Unite par defaut — code", self.f_default_unite)
             f.addRow("Unite par defaut — nom", self.f_default_unite_int)
             f.addRow("", self.f_barcode_ref)
+            f.addRow("", self.f_maj_code_barres)
             f.addRow("Seuil ID reserves", self.f_reserved)
             f.addRow(QLabel("<b>Prix de vente</b>"))
             f.addRow("", self.f_prix_vente_auto)
@@ -661,6 +672,7 @@ def _window_class():
             rows = [("piece", "Bon de reception"), ("tiers", "Fournisseur / depot"),
                     ("lus", "Lignes lues"), ("crees", "Articles crees"),
                     ("existants", "Articles existants"), ("maj", "Prix achat mis a jour"),
+                    ("barcodes", "Codes-barres renseignes"),
                     ("ht", "Total HT"), ("tva", "Total TVA"), ("ttc", "Total TTC")]
             for i, (k, lab) in enumerate(rows, start=1):
                 grid.addWidget(QLabel("<b>%s</b>" % lab), i, 0,
@@ -706,7 +718,8 @@ def _window_class():
                 for b in ("create_missing_tiers", "match_famille_par_intitule",
                           "create_missing_familles", "calc_prix_achat_ttc",
                           "barcode_depuis_ref", "prix_vente_auto",
-                          "match_par_designation", "ref_dans_designation"):
+                          "match_par_designation", "ref_dans_designation",
+                      "maj_code_barres"):
                     v = s.value(b)
                     if v is not None:
                         cfg[b] = str(v).lower() in ("true", "1")
@@ -1101,6 +1114,7 @@ def _window_class():
                 "refdoc": self.f_refdoc.text().strip(),
                 "match_par_designation": self.f_match_par_desig.isChecked(),
                 "ref_dans_designation": self.f_ref_designation.isChecked(),
+                "maj_code_barres": self.f_maj_code_barres.isChecked(),
                 "maj_prix_achat_seuil_pct": float(self.f_maj_seuil.value()),
             }
 
@@ -1154,6 +1168,8 @@ def _window_class():
                 self.f_match_par_desig.setChecked(bool(cfg["match_par_designation"]))
             if "ref_dans_designation" in cfg:
                 self.f_ref_designation.setChecked(bool(cfg["ref_dans_designation"]))
+            if "maj_code_barres" in cfg:
+                self.f_maj_code_barres.setChecked(bool(cfg["maj_code_barres"]))
             if "maj_prix_achat_seuil_pct" in cfg:
                 try: self.f_maj_seuil.setValue(float(cfg["maj_prix_achat_seuil_pct"]))
                 except (TypeError, ValueError): pass
@@ -1735,6 +1751,69 @@ def _window_class():
             else:
                 self.status.setText("Erreur creation modele — voir Journal.")
 
+        # ----- Synchroniser les codes-barres (articles deja importes) -----
+        def run_sync_barcodes_action(self):
+            if self.proc is not None:
+                return
+            if not self.f_database.text().strip():
+                QMessageBox.warning(self, "A corriger", "Renseignez la base Firebird (.FDB)."); return
+            if not self.script_path:
+                QMessageBox.warning(self, "A corriger", "Outil introuvable."); return
+            ok = QMessageBox.question(
+                self, "Synchroniser les codes-barres",
+                "Rendre visibles dans la fiche article les codes-barres des "
+                "articles deja importes (copie de CODE_BARRES vers EQUIV_CBARRES).\n\n"
+                "Operation sans risque (aucune suppression, rien sur le stock) et "
+                "repetable. Sauvegardez tout de meme la base au prealable.\n\nLancer ?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if ok != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                fd, tmp_cfg = tempfile.mkstemp(suffix=".json", prefix="primenf_cfg_")
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(self._build_config_dict(), fh, indent=2, ensure_ascii=False)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.critical(self, "Erreur", "Config temporaire : %s" % exc); return
+
+            cli = ["--run-cli", "--config", tmp_cfg, "--sync-barcodes"]
+            if getattr(sys, "frozen", False):
+                program, args = sys.executable, cli
+            else:
+                program, args = sys.executable, [GUI_SCRIPT] + cli
+
+            self.log.clear()
+            self._append_log("$ %s\n" % " ".join(self._q(a) for a in [program] + args))
+            self._sync_tmp_cfg = tmp_cfg
+
+            self.proc = QProcess(self)
+            self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            self.proc.readyReadStandardOutput.connect(self._on_output)
+            self.proc.finished.connect(self._on_sync_barcodes_finished)
+            self.proc.errorOccurred.connect(self._on_proc_error)
+            self._set_running(True)
+            self.status.setText("Synchronisation des codes-barres…")
+            self.proc.setProgram(program); self.proc.setArguments(args); self.proc.start()
+
+        def _on_sync_barcodes_finished(self, code, _st):
+            text = self.log.toPlainText()
+            self.proc = None
+            self._set_running(False)
+            if hasattr(self, "_sync_tmp_cfg") and self._sync_tmp_cfg:
+                try:
+                    if os.path.isfile(self._sync_tmp_cfg): os.remove(self._sync_tmp_cfg)
+                except OSError: pass
+                self._sync_tmp_cfg = None
+            if code == 0:
+                m = re.search(r"(\d+)\s+ajoute", text)
+                n = m.group(1) if m else "?"
+                self.status.setText("Codes-barres synchronises (%s ajoute(s))." % n)
+                QMessageBox.information(
+                    self, "Codes-barres synchronises",
+                    "%s code(s)-barres rendu(s) visible(s) dans la fiche article." % n)
+            else:
+                self.status.setText("Synchronisation echouee (code %s) — voir Journal." % code)
+
         # ----- Nettoyage des articles corrompus « ? » -----
         def run_clean_action(self):
             if self.proc is not None:
@@ -1885,7 +1964,8 @@ def _window_class():
             if not running:
                 self.busy.setValue(0)
             for b in (self.btn_preview, self.btn_import, self.btn_test, self.btn_load_lists,
-                      self.btn_match, self.btn_clean, self.btn_repair, self.adv):
+                      self.btn_match, self.btn_clean, self.btn_repair, self.btn_template,
+                      self.btn_sync_bc, self.adv):
                 b.setEnabled(not running)
             self.btn_cancel.setEnabled(running)
 
@@ -1907,6 +1987,7 @@ def _window_class():
                              ("crees",    r"Articles crees\s*:\s*(\d+)"),
                              ("existants",r"Articles existants\s*:\s*(\d+)"),
                              ("maj",      r"Articles mis a jour \(prix achat\)\s*:\s*(\d+)"),
+                             ("barcodes", r"Codes-barres renseignes\s*:\s*(\d+)"),
                              ("ht",       r"Total HT\s*:\s*([\d.,]+)"),
                              ("tva",      r"Total TVA\s*:\s*([\d.,]+)"),
                              ("ttc",      r"Total TTC\s*:\s*([\d.,]+)")):

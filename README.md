@@ -169,6 +169,34 @@ nom est laissé tel quel.
 Option `ref_dans_designation` (défaut **activé**) — décochable dans la GUI
 (*Familles & articles → « Ajouter la référence à la désignation… »*).
 
+### Codes-barres (où ils sont stockés)
+
+Quand l'Excel fournit une colonne **code-barres**, l'outil l'enregistre à deux
+endroits, pour que le code soit à la fois **scannable** et **visible** :
+
+- **`EQUIV_CBARRES`** — la table que le logiciel **affiche dans la fiche
+  article** (le code-barres que vous voyez à l'écran) ;
+- **`ARTICLE.CODE_BARRES`** — clé de scan (index UNIQUE) ; renseignée seulement
+  si le code est libre.
+
+Cela vaut pour les articles créés **et** pour les articles déjà existants qui
+n'ont pas encore de code-barres (option `maj_code_barres`, défaut **activé**).
+Les doublons (même code sur deux articles, ou code déjà utilisé) sont **ignorés**
+sans faire échouer l'import, et signalés dans le résumé.
+
+#### Réparer les articles déjà importés
+
+Si vous aviez importé des codes-barres avec une version précédente, ils sont
+dans `ARTICLE.CODE_BARRES` mais **pas** dans `EQUIV_CBARRES` — donc invisibles
+dans la fiche article. Le bouton **« Synchroniser codes-barres »** (ou la
+commande `--sync-barcodes`) les recopie vers `EQUIV_CBARRES`. L'opération est
+**sans risque** (aucune suppression, rien sur le stock) et **répétable** (elle
+n'ajoute jamais de doublon).
+
+```bash
+python import_bon_reception.py --config config.json --sync-barcodes
+```
+
 ### Prompt OCR (photo → Excel)
 
 Si vous numérisez un bon fournisseur papier, donnez ce prompt à Claude ou
@@ -274,6 +302,8 @@ Elle offre en plus :
 - **Annuler le dernier import** : après un import réel réussi, annule le bon
   en base (le stock est repris — sans suppression, natif au logiciel).
 - **Créer un modèle Excel** : génère un fichier `.xlsx` prêt à remplir.
+- **Synchroniser codes-barres** : rend visibles dans la fiche article les
+  codes-barres des articles **déjà importés** (voir ci-dessous).
 - une colonne **Prix vente** dans l'aperçu (marge + arrondi appliqués en direct) ;
 - les réglages **prix de vente** (marge, arrondi `seuil:pas`) directement à l'écran ;
 - un bouton **« Réparer l'arabe »** qui corrige sur place les noms déformés par

@@ -103,6 +103,9 @@ DEFAULT_CONFIG = {
     # ce n'est pas un code-barres) : utile pour les fournisseurs au libelle
     # generique ('stylo' -> 'stylo 70010').
     "ref_dans_designation": True,
+    # Renseigner le code-barres (EQUIV_CBARRES, affiche dans la fiche article)
+    # y compris sur un article DEJA existant qui n'en a pas encore.
+    "maj_code_barres": True,
 
     # --- Tracabilite --------------------------------------------------------
     "refdoc": "",                   # N° du bon fournisseur (stocke dans PIECE.REFDOC)
@@ -462,6 +465,12 @@ class Importer:
         self._famille_cache = None
         self._fam_code_next = None
         self.codec = codec_for(cfg.get("charset"))
+        # Suivi des codes-barres pour respecter l'index UNIQUE CODE_BARRES :
+        # un barcode deja attribue dans cet import ou porte par un autre article
+        # est ignore (au lieu de faire echouer toute la transaction).
+        self._barcodes_used = set()
+        self.barcode_added = set()  # refs ayant recu un code-barres (EQUIV / ARTICLE)
+        self.barcode_skipped = []   # (ref, barcode) ignores (doublon / conflit UNIQUE)
         # coefficients reels du type de piece (PIECE et ITEM)
         self.coeff_piece, self.coeff_piece_tr, \
             self.coeff_item, self.coeff_item_tr = self._load_type_coeffs()
@@ -630,24 +639,91 @@ class Importer:
         return cfg["default_famille"]
 
     # -- articles ---------------------------------------------------------
+    def _barcode_for_line(self, line, ref):
+        """Code-barres souhaite pour la ligne (colonne Excel, ou la reference si
+        barcode_depuis_ref). Vide -> None."""
+        barcode = (line.get("code_barres") or "").strip()
+        if not barcode and self.cfg.get("barcode_depuis_ref"):
+            barcode = ref
+        return barcode[:60] or None
+
+    def _barcode_is_free(self, barcode, ref):
+        """Vrai si 'barcode' peut etre attribue a 'ref' sans violer l'index
+        UNIQUE CODE_BARRES de ARTICLE : pas deja utilise dans cet import, et pas
+        deja porte par un AUTRE article."""
+        if not barcode or barcode in self._barcodes_used:
+            return False
+        self.cur.execute("SELECT REF_ART FROM ARTICLE WHERE CODE_BARRES = ?", (barcode,))
+        row = self.cur.fetchone()
+        return not (row and row[0] != ref)
+
+    def add_barcode_equiv(self, ref, barcode):
+        """Ajoute le code-barres dans EQUIV_CBARRES — la table que le logiciel
+        AFFICHE dans la fiche article. Idempotent ; respecte la FK (l'article
+        doit exister) et evite d'attribuer un meme code a deux articles.
+        Retourne True si une ligne a ete ajoutee."""
+        if not barcode:
+            return False
+        if self.exists("SELECT 1 FROM EQUIV_CBARRES WHERE REF_ART = ? AND CODE_BARRES = ?",
+                       (ref, barcode)):
+            return False
+        self.cur.execute("SELECT REF_ART FROM EQUIV_CBARRES WHERE CODE_BARRES = ?", (barcode,))
+        row = self.cur.fetchone()
+        if row and row[0] != ref:
+            self.barcode_skipped.append((ref, barcode))
+            return False
+        noequiv = str(self.next_base("NEXTEQUIV_CBARRES", "EQUIV_CBARRES",
+                                     "NOEQUIV_CBARRES") + 1)
+        self.cur.execute(
+            "INSERT INTO EQUIV_CBARRES (NOEQUIV_CBARRES, REF_ART, CODE_BARRES) "
+            "VALUES (?, ?, ?)", (noequiv, ref, barcode))
+        self.advance_generator("NEXTEQUIV_CBARRES", int(noequiv))
+        return True
+
+    def sync_barcode(self, ref, barcode):
+        """Renseigne le code-barres d'un article EXISTANT : EQUIV_CBARRES (table
+        affichee) + ARTICLE.CODE_BARRES si vide (cle de scan, index UNIQUE)."""
+        if not barcode:
+            return
+        added = False
+        self.cur.execute("SELECT CODE_BARRES FROM ARTICLE WHERE REF_ART = ?", (ref,))
+        r = self.cur.fetchone()
+        cur_bc = r[0] if r else None
+        if not (cur_bc and str(cur_bc).strip()) and self._barcode_is_free(barcode, ref):
+            self.cur.execute(
+                "UPDATE ARTICLE SET CODE_BARRES = ?, CODE_BARRE = ? WHERE REF_ART = ?",
+                (barcode, barcode[:35], ref))
+            self._barcodes_used.add(barcode)
+            added = True
+        if self.add_barcode_equiv(ref, barcode):
+            added = True
+        if added:
+            self.barcode_added.add(ref)
+
     def upsert_article(self, line):
         """Cree l'article s'il n'existe pas. Retourne 'created', 'exists' ou
-        'updated' (article existant dont on a mis a jour le prix d'achat)."""
+        'updated' (article existant dont le prix d'achat a ete mis a jour).
+        Renseigne aussi le code-barres (EQUIV_CBARRES + ARTICLE) a la creation
+        comme en backfill sur un article existant (maj_code_barres)."""
         ref = line["ref_art"]
         cfg = self.cfg
         tva = line["tva"]
         prix_achat_ht = line["prix"]              # prix de vente fournisseur = notre prix d'achat
         prix_achat_ttc = prix_achat_ht if cfg.get("calc_prix_achat_ttc", True) else None
+        barcode = self._barcode_for_line(line, ref)
 
         if self.exists("SELECT 1 FROM ARTICLE WHERE REF_ART = ?", (ref,)):
-            # Article existant : on n'y touche pas, SAUF si on demande
-            # explicitement la mise a jour du prix d'achat (recu a un nouveau prix).
+            # Article existant : on n'y touche pas, SAUF demande explicite de mise
+            # a jour du prix d'achat, et/ou ajout d'un code-barres absent.
+            state = "exists"
             if line.get("maj_prix_achat") and prix_achat_ht > 0:
                 self.cur.execute(
                     "UPDATE ARTICLE SET PRIXACHATHT = ?, PRIXACHATTTC = ? WHERE REF_ART = ?",
                     (prix_achat_ht, prix_achat_ttc, ref))
-                return "updated"
-            return "exists"
+                state = "updated"
+            if barcode and cfg.get("maj_code_barres", True):
+                self.sync_barcode(ref, barcode)
+            return state
 
         codefamille = self.resolve_famille(line["famille"])
 
@@ -663,15 +739,17 @@ class Importer:
         if prix_vente_ht is not None:
             prix_vente_ttc = round(prix_vente_ht * (1 + tva / 100.0), 4)
 
-        # Code-barres : le logiciel utilise la REFERENCE comme code scanne et
-        # laisse CODE_BARRES vide (index UNIQUE). On ne le renseigne donc que
-        # si l'Excel fournit une colonne code-barres distincte, ou si
-        # barcode_depuis_ref est explicitement active.
-        barcode = line.get("code_barres") or ""
-        if not barcode and cfg.get("barcode_depuis_ref"):
-            barcode = ref
-        code_barres = barcode[:60] or None        # CODE_BARRES VARCHAR(60)
-        code_barre = (barcode[:35] or None) if barcode else None  # CODE_BARRE VARCHAR(35)
+        # Code-barres : ARTICLE.CODE_BARRES (cle de scan, index UNIQUE -> on ne
+        # l'ecrit que s'il est libre) ET EQUIV_CBARRES (la table que le logiciel
+        # AFFICHE dans la fiche article, ajoutee juste apres la creation).
+        if barcode and self._barcode_is_free(barcode, ref):
+            code_barres = barcode[:60]
+            code_barre = barcode[:35]
+            self._barcodes_used.add(barcode)
+        else:
+            if barcode:
+                self.barcode_skipped.append((ref, barcode))
+            code_barres = code_barre = None
 
         # Unite de base : vide par defaut (comme le logiciel)
         unite = cfg.get("default_unite") or None
@@ -688,6 +766,9 @@ class Importer:
             (ref, codefamille, line["designation"][:100], code_barres, code_barre, code_fourn,
              prix_achat_ht, prix_achat_ttc, prix_vente_ht, prix_vente_ttc, tva,
              unite, unite, unite, datetime.datetime.now()))
+        # Code-barres visible dans la fiche article (EQUIV_CBARRES).
+        if barcode and self.add_barcode_equiv(ref, barcode):
+            self.barcode_added.add(ref)
         return "created"
 
     # -- piece + lignes ---------------------------------------------------
@@ -909,6 +990,39 @@ def mode_list_tiers(cfg, out_path):
           % (len(data["fournisseurs"]), len(data["depots"]), out_path))
 
 
+def mode_sync_barcodes(cfg, out_path=None):
+    """Repare les articles DEJA importes : recopie ARTICLE.CODE_BARRES vers
+    EQUIV_CBARRES (la table que le logiciel affiche dans la fiche article), pour
+    tout article qui porte un code-barres sans ligne EQUIV correspondante.
+    Idempotent : relancer n'ajoute pas de doublon."""
+    con = connect(cfg)
+    imp = Importer(con, cfg)
+    try:
+        cur = con.cursor()
+        cur.execute(
+            "SELECT REF_ART, CODE_BARRES FROM ARTICLE "
+            "WHERE CODE_BARRES IS NOT NULL AND CHAR_LENGTH(TRIM(CODE_BARRES)) > 0")
+        rows = cur.fetchall()
+        added = 0
+        for ref, bc in rows:
+            bc = (bc or "").strip()
+            if bc and imp.add_barcode_equiv(ref, bc):
+                added += 1
+        con.commit()
+        msg = ("Synchronisation codes-barres : %d article(s) avec code-barres ; "
+               "%d ajoute(s) dans EQUIV_CBARRES ; %d ignore(s)."
+               % (len(rows), added, len(imp.barcode_skipped)))
+        print(msg)
+        if out_path:
+            _write_json(out_path, {"sources": len(rows), "added": added,
+                                   "skipped": len(imp.barcode_skipped)})
+    except Exception as exc:
+        con.rollback()
+        print("ECHEC synchronisation : %s" % exc, file=sys.stderr); sys.exit(1)
+    finally:
+        con.close()
+
+
 def mode_cancel_piece(cfg, nopiece):
     """Annule un bon (ANNULEE=0) : le trigger UPDATE_PIECE repercute sur les
     items et le stock est repris (annulation native du logiciel)."""
@@ -959,6 +1073,8 @@ def main():
     ap.add_argument("--list-familles", action="store_true", help="Liste les familles -> --out")
     ap.add_argument("--list-tiers", action="store_true", help="Liste fournisseurs/depots -> --out")
     ap.add_argument("--cancel-piece", help="Annule le bon NOPIECE donne (ANNULEE=0)")
+    ap.add_argument("--sync-barcodes", action="store_true",
+                    help="Repare les articles deja importes : copie CODE_BARRES -> EQUIV_CBARRES")
     ap.add_argument("--make-template", help="Cree un modele Excel au chemin donne")
     ap.add_argument("--out", help="Fichier JSON de sortie (modes --match/--check-dup/--list-*)")
     args = ap.parse_args()
@@ -977,6 +1093,8 @@ def main():
 
     if args.cancel_piece:
         mode_cancel_piece(cfg, args.cancel_piece); return
+    if args.sync_barcodes:
+        mode_sync_barcodes(cfg, args.out); return
     if args.list_familles:
         if not args.out: sys.exit("--list-familles requiert --out.")
         mode_list_familles(cfg, args.out); return
@@ -1056,6 +1174,11 @@ def main():
               % (len(created), created if len(created) <= 20 else created[:20] + ["..."]))
         print("Articles existants : %d" % len(existing))
         print("Articles mis a jour (prix achat) : %d" % len(updated))
+        print("Codes-barres renseignes : %d" % len(imp.barcode_added))
+        if imp.barcode_skipped:
+            print("Codes-barres ignores (doublon/conflit) : %d  %s"
+                  % (len(imp.barcode_skipped),
+                     [b for _r, b in imp.barcode_skipped[:10]]))
         print("Total HT  : %.2f" % montant_ht)
         print("Total TVA : %.2f" % tva_tot)
         print("Total TTC : %.2f" % montant_ttc)
