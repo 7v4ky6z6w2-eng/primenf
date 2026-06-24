@@ -316,7 +316,7 @@ def _window_class():
         QCheckBox, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit,
         QTableWidget, QTableWidgetItem, QGroupBox, QFormLayout, QGridLayout,
         QVBoxLayout, QHBoxLayout, QMessageBox, QTabWidget, QSizePolicy,
-        QHeaderView, QAbstractItemView, QProgressBar,
+        QHeaderView, QAbstractItemView, QProgressBar, QMenu,
     )
 
     FamilleDelegate = _make_famille_delegate_class()
@@ -364,6 +364,9 @@ def _window_class():
 
             # Suivi des lignes dont PV a ete saisie manuellement (index de ligne)
             self._pv_manual = set()
+            # Rapprochements appliques : row -> {"orig":ref fournisseur, "match":ref trouvee}
+            # pour pouvoir REFUSER un mauvais rapprochement et recreer l'article.
+            self._match_rows = {}
             # Garde contre la recursion dans cellChanged
             self._cc_guard = False
 
@@ -599,6 +602,9 @@ def _window_class():
             self._famille_delegate = FamilleDelegate(parent=self.preview_table)
             self.preview_table.setItemDelegateForColumn(self.COL_FAM, self._famille_delegate)
             self.preview_table.cellChanged.connect(self._on_cell_changed)
+            # Clic droit sur une ligne : refuser / accepter un rapprochement.
+            self.preview_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self.preview_table.customContextMenuRequested.connect(self._show_table_menu)
 
             pvl.addWidget(self.preview_table, 1)
             out.addTab(pv, "Apercu des lignes")
@@ -798,6 +804,7 @@ def _window_class():
         def load_preview(self, path):
             self.preview_table.setRowCount(0)
             self._pv_manual.clear()
+            self._match_rows = {}
             if not self.tool_mod:
                 self.preview_count.setText(
                     "Apercu hors-ligne indisponible. Utilisez « Apercu (dry-run) ».")
@@ -1590,6 +1597,7 @@ def _window_class():
         def _apply_match_results(self, result):
             """Colore la table et remplit la colonne Statut/Match."""
             tof = getattr(self.tool_mod, "to_float", float) if self.tool_mod else float
+            self._match_rows = {}
 
             with self._suspend_cellchanged():
                 nb = self.preview_table.rowCount()
@@ -1608,9 +1616,13 @@ def _window_class():
                         bg = COLOR_EXACT
                     elif status == "matched":
                         bg = COLOR_MATCHED
-                        # Auto-remplir la ref avec la ref trouvee
+                        # Auto-remplir la ref avec la ref trouvee, en MEMORISANT la
+                        # ref fournisseur d'origine pour pouvoir refuser le match.
                         ref_it = self.preview_table.item(r, self.COL_REF)
                         if ref_it and match_ref:
+                            orig_ref = ref_it.text()
+                            self._match_rows[r] = {"orig": orig_ref, "match": match_ref,
+                                                   "state": "accepted"}
                             ref_it.setText(match_ref)
                     else:
                         bg = COLOR_NEW
@@ -1647,6 +1659,74 @@ def _window_class():
                                     stat_it.setBackground(COLOR_WARN)
 
             self._flag_ocr_anomalies()
+            if self._match_rows:
+                self.status.setText(
+                    "Rapprochement termine. Clic droit sur une ligne jaune pour "
+                    "refuser un mauvais rapprochement (creer un nouvel article).")
+
+        # ----- Refuser / accepter un rapprochement (clic droit) -----
+        def _show_table_menu(self, pos):
+            idx = self.preview_table.indexAt(pos)
+            if not idx.isValid():
+                return
+            r = idx.row()
+            info = self._match_rows.get(r)
+            menu = QMenu(self)
+            if info and info.get("state") == "accepted":
+                a = menu.addAction("Ce n'est pas le meme article — creer un nouvel article")
+                a.triggered.connect(lambda _=False, row=r: self._reject_match(row))
+            elif info and info.get("state") == "rejected":
+                a = menu.addAction("Finalement, utiliser l'article existant trouve (%s)"
+                                   % info["match"])
+                a.triggered.connect(lambda _=False, row=r: self._accept_match(row))
+            else:
+                a = menu.addAction("Aucun rapprochement a modifier sur cette ligne")
+                a.setEnabled(False)
+            menu.exec(self.preview_table.viewport().mapToGlobal(pos))
+
+        def _set_row_color(self, r, color):
+            with self._suspend_cellchanged():
+                for c in range(self.preview_table.columnCount()):
+                    it = self.preview_table.item(r, c)
+                    if it:
+                        it.setBackground(color)
+
+        def _reject_match(self, row):
+            """Refuse le rapprochement : on remet la REFERENCE FOURNISSEUR d'origine
+            (un nouvel article sera cree) sans avoir a la ressaisir."""
+            info = self._match_rows.get(row)
+            if not info:
+                return
+            with self._suspend_cellchanged():
+                ref_it = self.preview_table.item(row, self.COL_REF)
+                if ref_it:
+                    ref_it.setText(info["orig"])
+                stat_it = self.preview_table.item(row, self.COL_STATUT)
+                if stat_it:
+                    stat_it.setText("nouveau (refuse)")
+            info["state"] = "rejected"
+            self._set_row_color(row, COLOR_NEW)
+            self._flag_ocr_anomalies()
+            self.status.setText("Ligne %d : rapprochement refuse — un nouvel article "
+                                "sera cree (ref. %s)." % (row + 1, info["orig"]))
+
+        def _accept_match(self, row):
+            """Re-applique le rapprochement (revient sur un refus)."""
+            info = self._match_rows.get(row)
+            if not info:
+                return
+            with self._suspend_cellchanged():
+                ref_it = self.preview_table.item(row, self.COL_REF)
+                if ref_it:
+                    ref_it.setText(info["match"])
+                stat_it = self.preview_table.item(row, self.COL_STATUT)
+                if stat_it:
+                    stat_it.setText("matched")
+            info["state"] = "accepted"
+            self._set_row_color(row, COLOR_MATCHED)
+            self._flag_ocr_anomalies()
+            self.status.setText("Ligne %d : article existant utilise (ref. %s)."
+                                % (row + 1, info["match"]))
 
         # ----- Annuler le dernier import -----
         def cancel_last_import(self):

@@ -290,7 +290,12 @@ Elle offre en plus :
   Prix vente et le Total HT se recalculent automatiquement.
 - **Rechercher correspondances** : rapproche chaque ligne sans référence à un
   article existant via le numéro dans la désignation (colore en vert=exact,
-  jaune=retrouvé, rose=nouveau) et pré-remplit la référence.
+  jaune=retrouvé, rose=nouveau) et pré-remplit la référence. Si un rapprochement
+  est **erroné** (un article retrouvé qui n'est pas le bon), **clic droit** sur
+  la ligne jaune → *« Ce n'est pas le même article — créer un nouvel article »* :
+  la référence fournisseur d'origine est restaurée automatiquement (un nouvel
+  article sera créé), sans avoir à la ressaisir. Le clic droit permet aussi de
+  revenir sur un refus.
 - **MAJ Prix achat** : cochez la case d'une ligne pour mettre à jour le prix
   d'achat d'un article existant (avec alerte si l'écart dépasse le seuil configuré).
 - **Charger les listes** : après un test de connexion, remplit les listes
