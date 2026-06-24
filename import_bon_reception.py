@@ -99,6 +99,10 @@ DEFAULT_CONFIG = {
     # --- Rapprochement par designation (lignes sans code-barres) ------------
     "match_par_designation": True,  # retrouver un article existant via le numero du libelle
     "maj_prix_achat_seuil_pct": 40, # alerte si le prix achat varie de plus de X% (OCR)
+    # Recopier la reference dans la designation si elle n'y figure pas (et que
+    # ce n'est pas un code-barres) : utile pour les fournisseurs au libelle
+    # generique ('stylo' -> 'stylo 70010').
+    "ref_dans_designation": True,
 
     # --- Tracabilite --------------------------------------------------------
     "refdoc": "",                   # N° du bon fournisseur (stocke dans PIECE.REFDOC)
@@ -157,6 +161,32 @@ def to_float(v, default=0.0):
         return float(txt)
     except ValueError:
         return default
+
+
+def looks_like_barcode(s):
+    """Vrai si 's' ressemble a un code-barres (EAN/UPC) : une suite de chiffres
+    de 8 caracteres ou plus (EAN-8, UPC-12, EAN-13). Les references 'courtes'
+    (ex. 70010, STY-12) ne sont PAS considerees comme des code-barres."""
+    s = (s or "").strip()
+    return s.isdigit() and len(s) >= 8
+
+
+def apply_ref_to_designation(line, cfg):
+    """Ajoute la reference a la designation si elle n'y figure pas deja ET que
+    ce n'est pas un code-barres. Utile quand le fournisseur ne met qu'un libelle
+    generique ('stylo') sans numero : la reference rejoint le nom pour identifier
+    l'article et permettre le rapprochement par numero. Idempotent (ne double
+    jamais la reference)."""
+    if not cfg.get("ref_dans_designation", True):
+        return
+    ref = (line.get("ref_art") or "").strip()
+    desig = (line.get("designation") or "").strip()
+    if not ref or looks_like_barcode(ref):
+        return
+    nref = norm(ref)
+    if nref and nref in norm(desig):
+        return                      # reference deja presente dans le libelle
+    line["designation"] = (desig + " " + ref).strip() if desig else ref
 
 
 # Correspondance charset Firebird -> codec Python (pour assainir le texte).
@@ -288,6 +318,7 @@ def read_excel(path, cfg):
                                if "code_barres" in colmap and row[colmap["code_barres"]] is not None
                                else ""),
         }
+        apply_ref_to_designation(line, cfg)
         lines.append(line)
     return lines
 
@@ -316,6 +347,7 @@ def load_lines_json(path, cfg):
             "famille":     txt(str(d.get("famille") or "").strip()),
             "code_barres": txt(str(d.get("code_barres") or "").strip()),
         }
+        apply_ref_to_designation(line, cfg)
         pv = d.get("prix_vente")
         if pv is not None and str(pv).strip() != "":
             line["prix_vente"] = to_float(pv, None)

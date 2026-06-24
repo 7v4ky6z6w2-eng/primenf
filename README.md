@@ -153,6 +153,22 @@ pris en charge tel quel.
 Utilisez le bouton **« Créer un modèle Excel »** (GUI) ou la commande
 `--make-template` pour obtenir un fichier `.xlsx` prêt à remplir.
 
+### Référence ajoutée à la désignation
+
+Certains fournisseurs donnent une **référence** (et parfois un code-barres)
+mais une désignation **générique** (juste `stylo`, sans numéro). Pour que
+l'article reste identifiable et rapprochable par la suite, l'outil **ajoute la
+référence à la désignation** quand elle n'y figure pas déjà — par exemple
+`stylo` (réf. `70010`) devient **`stylo 70010`**.
+
+Exception : si la référence est en réalité un **code-barres** (suite de ≥ 8
+chiffres, type EAN/UPC), elle n'est **pas** recopiée dans le nom (cela
+n'apporterait rien de lisible). La référence reste alors la clé de scan, et le
+nom est laissé tel quel.
+
+Option `ref_dans_designation` (défaut **activé**) — décochable dans la GUI
+(*Familles & articles → « Ajouter la référence à la désignation… »*).
+
 ### Prompt OCR (photo → Excel)
 
 Si vous numérisez un bon fournisseur papier, donnez ce prompt à Claude ou

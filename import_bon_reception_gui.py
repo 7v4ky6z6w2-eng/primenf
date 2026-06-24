@@ -357,6 +357,7 @@ def _window_class():
             self.f_marge.valueChanged.connect(self._recompute_all_pv)
             self.f_arrondi.editingFinished.connect(self._recompute_all_pv)
             self.f_charset.currentTextChanged.connect(lambda *_: self._reload_preview())
+            self.f_ref_designation.toggled.connect(lambda *_: self._reload_preview())
 
         # ---- creation des widgets de saisie (noms stables) -------------- #
         def _create_fields(self):
@@ -411,6 +412,9 @@ def _window_class():
             self.f_maj_seuil.setDecimals(0); self.f_maj_seuil.setValue(40); self.f_maj_seuil.setSuffix(" %")
             self.f_match_par_desig = QCheckBox("Retrouver les articles existants par le numero dans la designation")
             self.f_match_par_desig.setChecked(True)
+            self.f_ref_designation = QCheckBox(
+                "Ajouter la reference a la designation si absente (sauf si c'est un code-barres)")
+            self.f_ref_designation.setChecked(True)
 
             # --- prix de vente automatique ---
             self.f_prix_vente_auto = QCheckBox("Calculer un prix de vente automatique (nouveaux articles)")
@@ -618,6 +622,7 @@ def _window_class():
             f.addRow("Arrondi (seuil:pas)", self.f_arrondi)
             f.addRow(QLabel("<b>Rapprochement</b>"))
             f.addRow("", self.f_match_par_desig)
+            f.addRow("", self.f_ref_designation)
             f.addRow("Seuil alerte MAJ prix achat", self.f_maj_seuil)
             return w
 
@@ -676,7 +681,7 @@ def _window_class():
                 for b in ("create_missing_tiers", "match_famille_par_intitule",
                           "create_missing_familles", "calc_prix_achat_ttc",
                           "barcode_depuis_ref", "prix_vente_auto",
-                          "match_par_designation"):
+                          "match_par_designation", "ref_dans_designation"):
                     v = s.value(b)
                     if v is not None:
                         cfg[b] = str(v).lower() in ("true", "1")
@@ -1070,6 +1075,7 @@ def _window_class():
                 "arrondi_paliers": parse_arrondi(self.f_arrondi.text()),
                 "refdoc": self.f_refdoc.text().strip(),
                 "match_par_designation": self.f_match_par_desig.isChecked(),
+                "ref_dans_designation": self.f_ref_designation.isChecked(),
                 "maj_prix_achat_seuil_pct": float(self.f_maj_seuil.value()),
             }
 
@@ -1121,6 +1127,8 @@ def _window_class():
                 self.f_refdoc.setText(str(cfg.get("refdoc") or ""))
             if "match_par_designation" in cfg:
                 self.f_match_par_desig.setChecked(bool(cfg["match_par_designation"]))
+            if "ref_dans_designation" in cfg:
+                self.f_ref_designation.setChecked(bool(cfg["ref_dans_designation"]))
             if "maj_prix_achat_seuil_pct" in cfg:
                 try: self.f_maj_seuil.setValue(float(cfg["maj_prix_achat_seuil_pct"]))
                 except (TypeError, ValueError): pass
