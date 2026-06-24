@@ -135,6 +135,10 @@ def load_tool_module(script_path):
 def friendly_error(raw):
     """Traduit les pannes courantes en francais lisible pour un debutant."""
     t = (raw or "").lower()
+    # IMPORTANT : l'ordre compte. Les pannes RESEAU (hote/serveur) doivent etre
+    # testees AVANT les identifiants : Firebird signale beaucoup d'erreurs
+    # (reseau compris) avec le meme code generique -902, qu'il ne faut donc PAS
+    # interpreter comme « mot de passe incorrect ».
     rules = [
         (("module manquant : fdb", "no module named 'fdb'", "import fdb"),
          "Le pilote Firebird « fdb » n'est pas installe sur ce poste "
@@ -145,15 +149,36 @@ def friendly_error(raw):
         (("fbclient", "client library", "load_api", "libfbclient"),
          "Librairie cliente Firebird introuvable (fbclient.dll). Indiquez son "
          "chemin dans les options avancees."),
-        (("password", "user name", "login", "-902", "incorrect user"),
-         "Identifiant ou mot de passe incorrect."),
+        # --- Reseau / serveur injoignable (teste AVANT les identifiants) ---
+        (("unable to complete network request", "network request to host",
+          "failed to establish a connection", "connection refused",
+          "connection rejected", "unavailable database", "host unknown",
+          "connection lost", "is not available", "network error",
+          "winsock", "10060", "10061", "getaddrinfo"),
+         "Serveur Firebird injoignable : verifiez l'hote et le port (3050), que "
+         "le serveur Firebird tourne sur le poste serveur, et que le pare-feu "
+         "autorise le port. Pour un acces local, laissez l'hote VIDE."),
+        # --- Version/protocole client <-> serveur (frequent en reseau FB2.5) ---
+        (("incompatible wire encryption", "missing security context",
+          "error occurred during login", "srp", "authentication, client",
+          "client plugin requires", "no matching authentication"),
+         "Le client et le serveur Firebird ne sont pas compatibles (version ou "
+         "methode d'authentification). Utilisez un fbclient.dll de la MEME "
+         "version que le serveur (Firebird 2.5) — voir « Librairie cliente FB » "
+         "dans les options."),
+        # --- Identifiants : seulement des messages SPECIFIQUES ---
+        (("are not defined", "user name and password",
+          "incorrect user name or password", "invalid username or password",
+          "password incorrect", "incorrect user"),
+         "Identifiant ou mot de passe incorrect.\n"
+         "Note : en acces LOCAL (hote vide), Firebird embedded ne verifie PAS "
+         "le mot de passe ; en RESEAU, le serveur exige le vrai mot de passe "
+         "SYSDBA du poste serveur (pas forcement « masterkey »)."),
         (("i/o error", "no such file", "cannot open", "unable to open",
-          "error while trying to open file", "not found"),
-         "Base de donnees introuvable : verifiez le chemin du fichier .FDB."),
-        (("unavailable database", "connection refused", "rejected", "network",
-          "failed to establish"),
-         "Serveur Firebird injoignable : verifiez l'hote / le port, ou laissez "
-         "l'hote vide pour un acces local au fichier."),
+          "error while trying to open file"),
+         "Base de donnees introuvable : verifiez le chemin du .FDB. En reseau, "
+         "le chemin doit etre celui vu PAR LE SERVEUR (ex. C:\\PRIME\\PR22.FDB) "
+         "ou un alias Firebird."),
         (("malformed string", "transliteration", "charset"),
          "Probleme d'encodage : pour l'arabe choisissez le charset WIN1256."),
         (("excel introuvable", "fichier excel"),
@@ -1140,16 +1165,29 @@ def _window_class():
                 self._set_conn(False, "Renseignez le chemin de la base."); return
             if not self.tool_mod:
                 self._set_conn(False, friendly_error(self.tool_err)); return
-            self._set_conn(None, "Connexion en cours…")
+            if cfg.get("host"):
+                self._set_conn(None, "Connexion au serveur en cours (peut figer "
+                                     "quelques secondes si l'hote ne repond pas)…")
+            else:
+                self._set_conn(None, "Connexion en cours…")
             QApplication.processEvents()
             try:
                 con = self.tool_mod.connect(cfg)
                 con.close()
                 self._set_conn(True, "Connexion reussie.")
+                self.conn_result.setToolTip("")
             except SystemExit as exc:
-                self._set_conn(False, friendly_error(str(exc.code)))
+                self._report_conn_error(str(exc.code))
             except Exception as exc:  # noqa: BLE001
-                self._set_conn(False, friendly_error(str(exc)))
+                self._report_conn_error(str(exc))
+
+        def _report_conn_error(self, raw):
+            """Affiche le message lisible ET conserve l'erreur brute Firebird
+            (infobulle + Journal) pour pouvoir diagnostiquer la vraie cause."""
+            self._set_conn(False, friendly_error(raw))
+            self.conn_result.setToolTip(raw or "")
+            self._append_log("\n[Test connexion] ECHEC — message brut Firebird :\n"
+                             "%s\n" % (raw or "(vide)"))
 
         def load_lists(self):
             """Charge les listes de familles/fournisseurs/depots depuis la base."""
