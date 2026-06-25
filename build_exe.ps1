@@ -16,7 +16,7 @@ param([string]$Py = "")
 
 function Find-Python {
     $candidates = @(
-        @('py','-3.13'), @('py','-3.12'), @('py','-3.11'),
+        @('py','-3.14'), @('py','-3.13'), @('py','-3.12'), @('py','-3.11'),
         @('py','-3.10'), @('py','-3.9'), @('py','-3'), @('py'), @('python')
     )
     foreach ($c in $candidates) {

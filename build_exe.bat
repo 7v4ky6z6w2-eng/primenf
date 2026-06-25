@@ -15,7 +15,7 @@ REM ============================================================
 
 REM --- Detection automatique d'un lanceur Python qui fonctionne ---
 if not defined PY (
-    for %%P in ("py -3.13" "py -3.12" "py -3.11" "py -3.10" "py -3.9" "py -3" "py" "python") do (
+    for %%P in ("py -3.14" "py -3.13" "py -3.12" "py -3.11" "py -3.10" "py -3.9" "py -3" "py" "python") do (
         if not defined PY (
             %%~P --version >nul 2>&1 && set "PY=%%~P"
         )
