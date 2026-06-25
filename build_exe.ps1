@@ -7,9 +7,10 @@ Set-Location -Path $PSScriptRoot
 # On essaie, dans l'ordre : py -3.11, py -3, python, python3.
 function Find-Python {
     $candidates = @(
-        @("py", @("-3.11")),
+        @("py", @("-3.14")),
         @("py", @("-3")),
         @("python", @()),
+        @("py", @("-3.11")),
         @("python3", @())
     )
     foreach ($c in $candidates) {
@@ -37,8 +38,11 @@ $exe = $py[0]; $pre = $py[1]
 Write-Host "== Python utilise : $exe $($pre -join ' ') ==" -ForegroundColor Cyan
 & $exe @pre -c "import sys; print('   ', sys.version)"
 
-Write-Host "== Installation des dependances ==" -ForegroundColor Cyan
-& $exe @pre -m pip install -r requirements.txt -r requirements-build.txt
+Write-Host "== Mise a jour de pip ==" -ForegroundColor Cyan
+& $exe @pre -m pip install --upgrade pip
+
+Write-Host "== Installation/maj des dependances (PyInstaller a jour pour 3.14) ==" -ForegroundColor Cyan
+& $exe @pre -m pip install --upgrade -r requirements.txt -r requirements-build.txt
 
 Write-Host "== Construction de l'executable ==" -ForegroundColor Cyan
 & $exe @pre -m PyInstaller --noconfirm --clean --onefile --windowed --name BulkArticleEditor bulk_article_editor.py
