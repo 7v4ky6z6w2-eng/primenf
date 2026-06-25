@@ -498,13 +498,13 @@ class DemoRepository:
 
     def _sample(self):
         data = [
-            ("A001", "Cafe moulu 250g", "3001234500017", "", 2.50, 2.98, 19, 1.40, "BOISSON"),
-            ("A002", "The vert bio 100g", "3001234500024", "", 3.10, 3.69, 19, 1.80, "BOISSON"),
-            ("A003", "Sucre blanc 1kg", "", "", 1.05, 1.25, 19, 0.70, "EPICERIE"),
-            ("A004", "Huile olive 1L", "3001234500048", "", 7.90, 9.40, 19, 5.20, "EPICERIE"),
-            ("A005", "Savon de Marseille", "3001234500055", "", 1.80, 2.14, 19, 0.95, "HYGIENE"),
-            ("B010", "Stylo bille bleu", "", "", 0.50, 0.60, 19, 0.20, "PAPETERIE"),
-            ("B011", "Cahier 96 pages", "3001234500079", "", 1.20, 1.43, 19, 0.65, "PAPETERIE"),
+            ("A001", "Cafe moulu 250g", "3001234500017", "", 2.50, 2.98, 19, 1.40, 12, "BOISSON"),
+            ("A002", "The vert bio 100g", "3001234500024", "", 3.10, 3.69, 19, 1.80, 12, "BOISSON"),
+            ("A003", "Sucre blanc 1kg", "", "", 1.05, 1.25, 19, 0.70, 10, "EPICERIE"),
+            ("A004", "Huile olive 1L", "3001234500048", "", 7.90, 9.40, 19, 5.20, 6, "EPICERIE"),
+            ("A005", "Savon de Marseille", "3001234500055", "", 1.80, 2.14, 19, 0.95, 24, "HYGIENE"),
+            ("B010", "Stylo bille bleu", "", "", 0.50, 0.60, 19, 0.20, 50, "PAPETERIE"),
+            ("B011", "Cahier 96 pages", "3001234500079", "", 1.20, 1.43, 19, 0.65, 25, "PAPETERIE"),
         ]
         rows = []
         for rec in data:

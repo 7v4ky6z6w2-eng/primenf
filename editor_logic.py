@@ -43,14 +43,16 @@ class Cols:
     PA_TTC = "PRIXACHATTTC"
     TVA = "TAUX_TVA"
     FAMILLE = "CODEFAMILLE"
+    QTE_CARTON = "QTEPCARTON"   # quantite par carton (numerique)
 
     #: Colonnes affichees dans la grille, dans l'ordre.
     DISPLAY = [REF, DESIGNATION, CODE_BARRES, CODE_BARRE,
-               PV_HT, PV_TTC, TVA, PA_HT, FAMILLE]
+               PV_HT, PV_TTC, TVA, PA_HT, QTE_CARTON, FAMILLE]
 
     #: Colonnes que l'utilisateur peut modifier dans l'editeur.
     #: (FAMILLE = CODEFAMILLE : affectation/creation geree avec garde-fou FK)
-    EDITABLE = {REF, CODE_BARRES, CODE_BARRE, PV_HT, PV_TTC, TVA, FAMILLE}
+    EDITABLE = {REF, CODE_BARRES, CODE_BARRE, PV_HT, PV_TTC, TVA, FAMILLE,
+                QTE_CARTON}
 
     #: Champs "prix de vente" qui doivent rester IDENTIQUES entre eux dans la
     #: base PRIME (HT et TTC contiennent le meme prix de vente saisi).
@@ -63,8 +65,8 @@ class Cols:
     FAMILLE_PARENT = "CODEFAMILLE_M"
     FAMILLE_TVA = "TAUX_TVA"
 
-    #: Colonnes numeriques (prix / taux).
-    NUMERIC = {PV_HT, PV_TTC, PA_HT, PA_TTC, TVA}
+    #: Colonnes numeriques (prix / taux / quantites).
+    NUMERIC = {PV_HT, PV_TTC, PA_HT, PA_TTC, TVA, QTE_CARTON}
 
     #: Longueur maximale (en octets) des champs texte modifiables. Sert de
     #: garde-fou tant que la base n'a pas confirme la vraie taille via les
@@ -86,6 +88,7 @@ class Cols:
         PV_TTC: "Prix vente TTC",
         TVA: "TVA %",
         PA_HT: "Prix achat HT",
+        QTE_CARTON: "Qte/carton",
         FAMILLE: "Famille",
     }
 
@@ -339,6 +342,8 @@ COLUMN_ALIASES = {
     Cols.PA_TTC: ["prixachatttc", "pa_ttc", "prix_achat_ttc"],
     Cols.TVA: ["taux_tva", "tva", "taux_de_tva", "txtva"],
     Cols.FAMILLE: ["codefamille", "famille", "code_famille", "rayon"],
+    Cols.QTE_CARTON: ["qtepcarton", "qte_p_carton", "qte_carton",
+                      "qtecarton", "qte_par_carton", "pcb"],
 }
 
 

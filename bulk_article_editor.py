@@ -349,7 +349,8 @@ class BulkEditorApp(ttk.Frame):
                                  selectmode="extended")
         widths = {Cols.REF: 90, Cols.DESIGNATION: 230, Cols.CODE_BARRES: 130,
                   Cols.CODE_BARRE: 110, Cols.PV_HT: 90, Cols.PV_TTC: 90,
-                  Cols.TVA: 60, Cols.PA_HT: 90, Cols.FAMILLE: 110}
+                  Cols.TVA: 60, Cols.PA_HT: 90, Cols.QTE_CARTON: 80,
+                  Cols.FAMILLE: 110}
         for c in self.columns:
             label = Cols.LABELS.get(c, self.tarif_labels.get(c, c))
             self.tree.heading(c, text=label,
@@ -412,6 +413,17 @@ class BulkEditorApp(ttk.Frame):
                 row=5, column=1, sticky="w")
             ttk.Button(price, text="Fixer la TVA", command=self.apply_tva).grid(
                 row=5, column=2, columnspan=2, sticky="e")
+
+        # --- Qte / carton ---
+        if self.repo.has(Cols.QTE_CARTON):
+            ttk.Separator(price, orient="horizontal").grid(
+                row=6, column=0, columnspan=4, sticky="ew", pady=6)
+            ttk.Label(price, text="Qte/carton").grid(row=7, column=0, sticky="e")
+            self.qtec_value = tk.StringVar()
+            ttk.Entry(price, textvariable=self.qtec_value, width=8).grid(
+                row=7, column=1, sticky="w")
+            ttk.Button(price, text="Fixer qte/carton", command=self.apply_qte_carton).grid(
+                row=7, column=2, columnspan=2, sticky="e")
 
         ttk.Separator(panel, orient="vertical").grid(row=0, column=1, sticky="ns", padx=8)
 
@@ -850,6 +862,21 @@ class BulkEditorApp(ttk.Frame):
             self._stage(rec, Cols.TVA, tva)
         self._refresh_all_selected(recs)
         self.status.set("TVA %s%% appliquee a %d article(s)." % (fmt_price(tva), len(recs)))
+
+    def apply_qte_carton(self):
+        recs = self._selected_recs()
+        if not recs:
+            return
+        qte = parse_number(self.qtec_value.get())
+        if qte is None:
+            messagebox.showwarning(APP_TITLE, "Indiquez une quantite par carton (ex : 12).")
+            return
+        for rec in recs:
+            rec[Cols.QTE_CARTON] = qte
+            self._stage(rec, Cols.QTE_CARTON, qte)
+        self._refresh_all_selected(recs)
+        self.status.set("Qte/carton %s appliquee a %d article(s)."
+                        % (fmt_price(qte), len(recs)))
 
     def copy_ref_to_barcode(self):
         recs = self._selected_recs()
