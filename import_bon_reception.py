@@ -166,6 +166,37 @@ def to_float(v, default=0.0):
         return default
 
 
+def clean_ref_cell(v):
+    """Texte propre d'une cellule (reference / code-barres) : un nombre entier
+    Excel (40 ou 40.0) devient '40' et non '40.0' ; le TEXTE est conserve tel
+    quel — on garde donc les zeros de tete d'une reference saisie en texte
+    ('00040'). Excel transforme helas souvent '00040' en nombre 40 : ce cas est
+    rattrape au rapprochement (norm_ref)."""
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    if isinstance(v, int):
+        return str(v)
+    return str(v).strip()
+
+
+def norm_ref(s):
+    """Cle de rapprochement d'une reference, tolerante au formatage Excel :
+    - espaces supprimes ;
+    - reference numerique (eventuellement '40.0') ramenee a sa forme entiere
+      SANS zeros de tete, pour rapprocher '00040' (stocke) et 40 (lu en nombre) ;
+    - sinon, majuscules (rapproche 'min24' et 'MIN24')."""
+    s = (s or "").strip()
+    if not s:
+        return ""
+    if re.fullmatch(r"\d+(\.0+)?", s):
+        return str(int(float(s)))
+    return s.upper()
+
+
 def looks_like_barcode(s):
     """Vrai si 's' ressemble a un code-barres (EAN/UPC) : une suite de chiffres
     de 8 caracteres ou plus (EAN-8, UPC-12, EAN-13). Les references 'courtes'
@@ -302,14 +333,15 @@ def read_excel(path, cfg):
     txt = lambda v: safe_text(v, codec)
     lines = []
     for row in ws.iter_rows(min_row=hrow + 1, values_only=True):
-        ref = row[colmap["ref_art"]] if colmap.get("ref_art") is not None else None
-        if ref is None or str(ref).strip() == "":
+        ref_raw = row[colmap["ref_art"]] if colmap.get("ref_art") is not None else None
+        ref = clean_ref_cell(ref_raw)             # 40.0 -> '40' ; '00040' conserve
+        if ref == "":
             continue
         line = {
-            "ref_art":     txt(str(ref).strip()),
+            "ref_art":     txt(ref),
             "designation": txt(str(row[colmap["designation"]]).strip()
                                if "designation" in colmap and row[colmap["designation"]] is not None
-                               else str(ref).strip()),
+                               else ref),
             "qte":   to_float(row[colmap["qte"]], 0.0),
             "prix":  to_float(row[colmap[price_field]], 0.0),
             "tva":   (to_float(row[colmap["tva"]], cfg["default_tva"])
@@ -317,9 +349,8 @@ def read_excel(path, cfg):
             "famille": txt(str(row[colmap["famille"]]).strip()
                            if "famille" in colmap and row[colmap["famille"]] is not None
                            else ""),
-            "code_barres": txt(str(row[colmap["code_barres"]]).strip()
-                               if "code_barres" in colmap and row[colmap["code_barres"]] is not None
-                               else ""),
+            "code_barres": txt(clean_ref_cell(row[colmap["code_barres"]])
+                               if "code_barres" in colmap else ""),
         }
         apply_ref_to_designation(line, cfg)
         lines.append(line)
@@ -337,18 +368,18 @@ def load_lines_json(path, cfg):
     txt = lambda v: safe_text(v, codec)
     lines = []
     for d in raw:
-        ref = d.get("ref_art")
-        if ref is None or str(ref).strip() == "":
+        ref = clean_ref_cell(d.get("ref_art"))
+        if ref == "":
             continue
         line = {
-            "ref_art":     txt(str(ref).strip()),
+            "ref_art":     txt(ref),
             "designation": txt(str(d.get("designation")).strip()
-                               if d.get("designation") else str(ref).strip()),
+                               if d.get("designation") else ref),
             "qte":         to_float(d.get("qte"), 0.0),
             "prix":        to_float(d.get("prix"), 0.0),
             "tva":         to_float(d.get("tva"), cfg["default_tva"]),
             "famille":     txt(str(d.get("famille") or "").strip()),
-            "code_barres": txt(str(d.get("code_barres") or "").strip()),
+            "code_barres": txt(clean_ref_cell(d.get("code_barres"))),
         }
         apply_ref_to_designation(line, cfg)
         pv = d.get("prix_vente")
@@ -407,12 +438,15 @@ def word_tokens(text_norm):
 
 def build_article_index(cur):
     """Index memoire des articles existants par numero-token (une requete).
-    Retourne (by_number, exact_refs, prix_achat_by_ref)."""
+    Retourne (by_number, exact_refs, prix_achat_by_ref, norm_refs).
+    norm_refs : cle normalisee (norm_ref) -> reference reellement stockee, pour
+    rattraper les references reformatees par Excel (zeros de tete, casse...)."""
     cur.execute("SELECT REF_ART, DESIGNATION, PRIXACHATHT FROM ARTICLE")
-    by_number, exact_refs, prix = {}, set(), {}
+    by_number, exact_refs, prix, norm_refs = {}, set(), {}, {}
     for ref, desig, pa in cur.fetchall():
         exact_refs.add(ref)
         prix[ref] = pa
+        norm_refs.setdefault(norm_ref(ref), ref)   # 1er arrive gagne
         dnorm = norm(desig)
         nums = number_tokens(dnorm)
         if not nums:
@@ -421,10 +455,10 @@ def build_article_index(cur):
         entry = (ref, desig, lead)
         for n in nums:
             by_number.setdefault(n, []).append(entry)
-    return by_number, exact_refs, prix
+    return by_number, exact_refs, prix, norm_refs
 
 
-def best_match_for_line(line, by_number, exact_refs, prix, min_score=0.60):
+def best_match_for_line(line, by_number, exact_refs, prix, norm_refs=None, min_score=0.60):
     """Pour une ligne fournisseur, retourne le rapprochement {ref_exists,
     match_ref, match_designation, match_score, match_prix_achat, status}."""
     ref = line["ref_art"]
@@ -432,6 +466,16 @@ def best_match_for_line(line, by_number, exact_refs, prix, min_score=0.60):
         return {"ref_exists": True, "match_ref": ref, "match_designation": None,
                 "match_score": 1.0, "match_prix_achat": prix.get(ref),
                 "status": "exact"}
+
+    # Rapprochement par reference NORMALISEE : '40' (Excel) <-> '00040' (stocke),
+    # 'min24' <-> 'MIN24'. La reference stockee est proposee (auto-remplie) pour
+    # eviter de creer un doublon.
+    if norm_refs:
+        stored = norm_refs.get(norm_ref(ref))
+        if stored and stored != ref:
+            return {"ref_exists": False, "match_ref": stored,
+                    "match_designation": None, "match_score": 0.99,
+                    "match_prix_achat": prix.get(stored), "status": "matched"}
 
     src = norm(line.get("designation") or line["ref_art"])
     src_nums = number_tokens(src)
@@ -842,19 +886,29 @@ def mode_match(cfg, lines, out_path):
     con = connect(cfg)
     try:
         cur = con.cursor()
-        by_number, exact_refs, prix = build_article_index(cur)
+        by_number, exact_refs, prix, norm_refs = build_article_index(cur)
         min_score = float(cfg.get("match_min_score", 0.60))
         result = []
         for ln in lines:
+            ref = ln["ref_art"]
             if auto:
-                m = best_match_for_line(ln, by_number, exact_refs, prix, min_score)
-            elif ln["ref_art"] in exact_refs:
-                m = {"ref_exists": True, "match_ref": ln["ref_art"],
+                m = best_match_for_line(ln, by_number, exact_refs, prix,
+                                        norm_refs, min_score)
+            elif ref in exact_refs:
+                m = {"ref_exists": True, "match_ref": ref,
                      "match_designation": None, "match_score": 1.0,
-                     "match_prix_achat": prix.get(ln["ref_art"]), "status": "exact"}
+                     "match_prix_achat": prix.get(ref), "status": "exact"}
             else:
-                m = {"ref_exists": False, "match_ref": None, "match_designation": None,
-                     "match_score": 0.0, "match_prix_achat": None, "status": "new"}
+                # Meme sans rapprochement par designation : rattraper une
+                # reference reformatee par Excel ('40' <-> '00040').
+                stored = norm_refs.get(norm_ref(ref))
+                if stored and stored != ref:
+                    m = {"ref_exists": False, "match_ref": stored,
+                         "match_designation": None, "match_score": 0.99,
+                         "match_prix_achat": prix.get(stored), "status": "matched"}
+                else:
+                    m = {"ref_exists": False, "match_ref": None, "match_designation": None,
+                         "match_score": 0.0, "match_prix_achat": None, "status": "new"}
             row = dict(ln); row.update(m); result.append(row)
     finally:
         con.close()

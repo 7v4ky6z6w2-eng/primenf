@@ -169,6 +169,20 @@ nom est laissé tel quel.
 Option `ref_dans_designation` (défaut **activé**) — décochable dans la GUI
 (*Familles & articles → « Ajouter la référence à la désignation… »*).
 
+### Références reformatées par Excel (zéros de tête)
+
+Excel transforme souvent une référence comme `00040` en **nombre** `40` (perte
+des zéros de tête). Avant, l'article apparaissait alors comme **« nouveau »** au
+rapprochement — et l'import créait un **doublon**. Désormais :
+
+- à la lecture, une cellule numérique entière donne `40` (et non `40.0`) ; le
+  texte est conservé tel quel (`00040` reste `00040`) ;
+- au **rapprochement**, la comparaison est tolérante : `40` retrouve l'article
+  `00040`, `min24` retrouve `MIN24`. La ligne passe en **« retrouvé »** (jaune)
+  et la **vraie référence stockée est pré-remplie**, donc l'import alimente
+  l'article existant au lieu d'en créer un nouveau. (Clic droit pour refuser si
+  ce n'est pas le bon article.)
+
 ### Codes-barres (où ils sont stockés)
 
 Quand l'Excel fournit une colonne **code-barres**, l'outil l'enregistre à deux
