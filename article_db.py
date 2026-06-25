@@ -195,6 +195,7 @@ class ArticleRepository:
             if real and real not in self.maxlen:
                 self.maxlen[real] = dflt
         self._introspect_familles()
+        self._introspect_tarifs()
 
     def _introspect_familles(self):
         """Detecte la table des familles et ses colonnes (code / nom / tva)."""
@@ -396,48 +397,152 @@ class ArticleRepository:
             self._pending = False
 
     # -- tarifs -----------------------------------------------------------
-    def load_tarif_types(self):
-        """Renvoie [(code, intitule), ...] depuis TYPE_TARIF, ou [] si absente."""
+    def _introspect_tarifs(self):
+        """Detecte les tables TYPE_TARIF (types) et TARIF (prix par article).
+
+        Dans PRIME : TYPE_TARIF(CODE_TYPE_TARIF, INTITULE=nom T1/T2..., MARGE)
+        et TARIF(CODE_TARIF=PK, CODE_TYPE_TARIF=FK, REF_ART=FK, PRIXHT=prix...).
+        Le NOM affiche du tarif est INTITULE ; le PRIX par article est PRIXHT.
+        On detecte les vraies colonnes pour rester robuste si elles different.
+        """
+        self.tarif_table = None
+        self.tarif_type_table = None
+        self.tarif_price_col = None
+        self.tarif_pk = None
+        self.tarif_name_col = None
+        self.tarif_gen = None
+        self._tt_names = None
         cur = self.con.cursor()
+
+        def cols(tbl):
+            try:
+                cur.execute(
+                    "SELECT TRIM(rf.RDB$FIELD_NAME) FROM RDB$RELATION_FIELDS rf "
+                    "WHERE rf.RDB$RELATION_NAME = ? ORDER BY rf.RDB$FIELD_POSITION",
+                    (tbl,))
+                return [r[0] for r in cur.fetchall()]
+            except Exception:                          # noqa: BLE001
+                return []
+
+        tt = cols("TYPE_TARIF")
+        tf = cols("TARIF")
+        if not tt or not tf:
+            return
+        if "REF_ART" not in tf or "CODE_TYPE_TARIF" not in tf:
+            return
+        # type de tarif (nom = INTITULE)
+        self.tarif_type_table = "TYPE_TARIF"
+        self.tarif_type_code = "CODE_TYPE_TARIF" if "CODE_TYPE_TARIF" in tt else tt[0]
+        self.tarif_type_name = "INTITULE" if "INTITULE" in tt else self.tarif_type_code
+        # table des prix
+        self.tarif_table = "TARIF"
+        self.tarif_ref = "REF_ART"
+        self.tarif_type_fk = "CODE_TYPE_TARIF"
+        for cand in ("PRIXHT", "TARIF_P_QTE", "PRIX", "PRIXVENTEHT", "MONTANT"):
+            if cand in tf:
+                self.tarif_price_col = cand
+                break
+        self.tarif_pk = "CODE_TARIF" if "CODE_TARIF" in tf else None
+        self.tarif_name_col = "INTITULE" if "INTITULE" in tf else None
+        # generateur du PK (NEXTTARIF dans PRIME)
         try:
-            cur.execute(
-                "SELECT TRIM(CODE_TYPE_TARIF), TRIM(INTITULE) "
-                "FROM TYPE_TARIF ORDER BY CODE_TYPE_TARIF")
-            return [(r[0] or "", r[1] or "") for r in cur.fetchall()]
+            cur.execute("SELECT TRIM(RDB$GENERATOR_NAME) FROM RDB$GENERATORS "
+                        "WHERE RDB$GENERATOR_NAME CONTAINING 'TARIF'")
+            gens = [r[0] for r in cur.fetchall()]
+            self.tarif_gen = "NEXTTARIF" if "NEXTTARIF" in gens else (gens[0] if gens else None)
         except Exception:                              # noqa: BLE001
+            self.tarif_gen = None
+
+    def has_tarifs(self):
+        return getattr(self, "tarif_table", None) is not None and self.tarif_price_col
+
+    @staticmethod
+    def _clean(v):
+        return v.strip() if isinstance(v, str) else v
+
+    def load_tarif_types(self):
+        """Renvoie [(code, nom), ...] des types de tarif (nom = INTITULE).
+
+        On ne garde que les types reellement utilises (au moins une ligne TARIF
+        avec un prix), ce qui ecarte les types speciaux (QTE, COND...) sans prix
+        unitaire. Repli : tous les types si la sonde echoue.
+        """
+        if not getattr(self, "tarif_type_table", None):
             return []
+        cur = self.con.cursor()
+        used = None
+        if self.has_tarifs():
+            try:
+                cur.execute("SELECT DISTINCT %s FROM %s WHERE %s IS NOT NULL"
+                            % (self.tarif_type_fk, self.tarif_table, self.tarif_price_col))
+                used = {self._clean(r[0]) for r in cur.fetchall()}
+            except Exception:                          # noqa: BLE001
+                used = None
+        cur.execute("SELECT %s, %s FROM %s ORDER BY %s"
+                    % (self.tarif_type_code, self.tarif_type_name,
+                       self.tarif_type_table, self.tarif_type_code))
+        out = []
+        for code, name in cur.fetchall():
+            code = self._clean(code)
+            name = self._clean(name)
+            if used is not None and code not in used:
+                continue
+            out.append((code, name or str(code)))
+        return out
+
+    def _type_names(self):
+        if self._tt_names is None:
+            self._tt_names = {c: n for c, n in self.load_tarif_types()}
+        return self._tt_names
 
     def load_tarifs(self, refs):
-        """Renvoie {ref: {type_code: prix}} depuis la table TARIF."""
-        if not refs:
+        """Renvoie {ref: {type_code: prix}} depuis la table TARIF (PRIXHT)."""
+        if not self.has_tarifs() or not refs:
             return {}
+        refs = [r for r in refs if r is not None]
         cur = self.con.cursor()
-        try:
-            placeholders = ",".join("?" for _ in refs)
+        result = {}
+        CHUNK = 200
+        for i in range(0, len(refs), CHUNK):
+            chunk = refs[i:i + CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
             cur.execute(
-                "SELECT TRIM(REF_ART), TRIM(CODE_TYPE_TARIF), TARIF_P_QTE "
-                f"FROM TARIF WHERE REF_ART IN ({placeholders})",
-                list(refs))
-            result = {}
+                "SELECT %s, %s, %s FROM %s WHERE %s IN (%s)"
+                % (self.tarif_ref, self.tarif_type_fk, self.tarif_price_col,
+                   self.tarif_table, self.tarif_ref, placeholders),
+                chunk)
             for ref, type_code, price in cur.fetchall():
-                result.setdefault(ref, {})[type_code] = price
-            return result
-        except Exception:                              # noqa: BLE001
-            return {}
+                # NE PAS nettoyer 'ref' : il doit rester identique a REF_ART de la
+                # ligne article (__ref0__) pour que la grille retrouve le tarif.
+                result.setdefault(ref, {})[self._clean(type_code)] = price
+        return result
+
+    def _next_tarif_id(self, cur):
+        """Nouvel identifiant de tarif (CODE_TARIF). VARCHAR -> renvoie une chaine."""
+        if self.tarif_gen:
+            cur.execute("SELECT GEN_ID(%s, 1) FROM RDB$DATABASE" % self.tarif_gen)
+            return str(cur.fetchone()[0])
+        cur.execute("SELECT MAX(CAST(%s AS BIGINT)) FROM %s"
+                    % (self.tarif_pk, self.tarif_table))
+        row = cur.fetchone()
+        return str((row[0] or 0) + 1)
 
     def update_tarifs(self, tarif_changes):
         """Ecrit les prix de tarif (sans committer).
 
         tarif_changes : liste de (ref0, type_code, prix).
-        UPDATE si la ligne existe ; INSERT (generateur NEXTTARIF) sinon.
-        prix=None -> suppression de la ligne.
+        UPDATE du PRIX si la ligne (type, ref) existe ; INSERT sinon
+        (CODE_TARIF via le generateur). prix=None -> suppression de la ligne.
         """
         from editor_logic import parse_number
+        if not self.has_tarifs():
+            raise DBError("Table des tarifs (TARIF) introuvable dans la base.")
         cur = self.con.cursor()
+        names = self._type_names()
         for ref, type_code, price in tarif_changes:
             cur.execute(
-                "SELECT CODE_TARIF FROM TARIF "
-                "WHERE CODE_TYPE_TARIF = ? AND REF_ART = ?",
+                "SELECT 1 FROM %s WHERE %s = ? AND %s = ?"
+                % (self.tarif_table, self.tarif_type_fk, self.tarif_ref),
                 (type_code, ref))
             existing = cur.fetchone()
             pv = parse_number(price)
@@ -445,27 +550,34 @@ class ArticleRepository:
                 if existing is not None:
                     if pv is None:
                         cur.execute(
-                            "DELETE FROM TARIF "
-                            "WHERE CODE_TYPE_TARIF = ? AND REF_ART = ?",
+                            "DELETE FROM %s WHERE %s = ? AND %s = ?"
+                            % (self.tarif_table, self.tarif_type_fk, self.tarif_ref),
                             (type_code, ref))
                     else:
                         cur.execute(
-                            "UPDATE TARIF SET TARIF_P_QTE = ? "
-                            "WHERE CODE_TYPE_TARIF = ? AND REF_ART = ?",
+                            "UPDATE %s SET %s = ? WHERE %s = ? AND %s = ?"
+                            % (self.tarif_table, self.tarif_price_col,
+                               self.tarif_type_fk, self.tarif_ref),
                             (pv, type_code, ref))
                 elif pv is not None:
-                    cur.execute("SELECT GEN_ID(NEXTTARIF, 1) FROM RDB$DATABASE")
-                    new_id = cur.fetchone()[0]
-                    cur.execute(
-                        "INSERT INTO TARIF "
-                        "(CODE_TARIF, CODE_TYPE_TARIF, REF_ART, TARIF_P_QTE) "
-                        "VALUES (?, ?, ?, ?)",
-                        (new_id, type_code, ref, pv))
+                    cols_ins = [self.tarif_type_fk, self.tarif_ref, self.tarif_price_col]
+                    vals = [type_code, ref, pv]
+                    if self.tarif_name_col:
+                        cols_ins.append(self.tarif_name_col)
+                        vals.append(names.get(type_code, type_code))
+                    if self.tarif_pk:
+                        cols_ins.insert(0, self.tarif_pk)
+                        vals.insert(0, self._next_tarif_id(cur))
+                    placeholders = ",".join("?" for _ in cols_ins)
+                    cur.execute("INSERT INTO %s (%s) VALUES (%s)"
+                                % (self.tarif_table, ",".join(cols_ins), placeholders),
+                                vals)
             except Exception as exc:                   # noqa: BLE001
                 raise DBError(
                     "Echec tarif '%s' / ref '%s' : %s" % (type_code, ref, exc)
                 ) from exc
         self._pending = True
+
 
 
 # --------------------------------------------------------------------------- #
@@ -493,6 +605,14 @@ class DemoRepository:
         self.fam_name_max = 50
         self._familles = {"BOISSON": "Boissons", "EPICERIE": "Epicerie",
                           "HYGIENE": "Hygiene", "PAPETERIE": "Papeterie"}
+        # types de tarif (code -> nom T1..T4), comme dans PRIME
+        self._tarif_types = [("6", "T1"), ("7", "T2"), ("8", "T3"), ("9", "T4")]
+        # prix par article : ref -> {code_type: prix}
+        self._tarifs = {
+            "A001": {"6": 2.20, "7": 2.40, "8": 2.60, "9": 2.80},
+            "A002": {"6": 2.80, "7": 3.00},
+            "A004": {"6": 7.00, "7": 7.50, "8": 8.20},
+        }
         self._rows = self._sample()
         self._staged = None
 
@@ -579,11 +699,22 @@ class DemoRepository:
     def rollback(self):
         self._staged = None
 
+    def has_tarifs(self):
+        return True
+
     def load_tarif_types(self):
-        return []
+        return list(self._tarif_types)
 
     def load_tarifs(self, refs):
-        return {}
+        refs = set(refs or [])
+        return {r: dict(v) for r, v in self._tarifs.items() if r in refs}
 
     def update_tarifs(self, tarif_changes):
-        pass
+        from editor_logic import parse_number
+        for ref, type_code, price in tarif_changes:
+            pv = parse_number(price)
+            slot = self._tarifs.setdefault(ref, {})
+            if pv is None:
+                slot.pop(type_code, None)
+            else:
+                slot[type_code] = pv
