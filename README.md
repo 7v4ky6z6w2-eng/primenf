@@ -186,16 +186,41 @@ sans faire échouer l'import, et signalés dans le résumé.
 
 #### Réparer les articles déjà importés
 
-Si vous aviez importé des codes-barres avec une version précédente, ils sont
-dans `ARTICLE.CODE_BARRES` mais **pas** dans `EQUIV_CBARRES` — donc invisibles
-dans la fiche article. Le bouton **« Synchroniser codes-barres »** (ou la
-commande `--sync-barcodes`) les recopie vers `EQUIV_CBARRES`. L'opération est
-**sans risque** (aucune suppression, rien sur le stock) et **répétable** (elle
-n'ajoute jamais de doublon).
+Deux cas selon l'origine du problème :
 
-```bash
-python import_bon_reception.py --config config.json --sync-barcodes
-```
+1. **Le code-barres est déjà dans `ARTICLE.CODE_BARRES`** mais pas dans
+   `EQUIV_CBARRES` (donc invisible dans la fiche). Bouton **« Synchroniser
+   codes-barres »** (ou `--sync-barcodes`) : recopie `CODE_BARRES` →
+   `EQUIV_CBARRES`.
+
+   ```bash
+   python import_bon_reception.py --config config.json --sync-barcodes
+   ```
+
+2. **Le code-barres n'a jamais été enregistré** (anciens imports où l'article
+   existait déjà, ou colonne non détectée) : il n'y a rien à recopier. Il faut
+   **reprendre le fichier Excel d'origine** (qui contient les codes-barres) et
+   l'appliquer aux articles existants — bouton **« Appliquer codes-barres (sans
+   stock) »** (ou `--apply-barcodes`). Cela renseigne `EQUIV_CBARRES` +
+   `CODE_BARRES`/`CODE_BARRE` **sans créer de bon ni toucher au stock** (donc
+   aucun risque de doublon de stock). Le rapprochement se fait par référence ;
+   un article introuvable est signalé, pas créé.
+
+   ```bash
+   python import_bon_reception.py --config config.json --apply-barcodes --excel fournisseur.xlsx
+   ```
+
+   Dans la GUI : chargez l'Excel fournisseur (vérifiez que la colonne
+   « Code-barres » est bien remplie dans l'aperçu), puis cliquez sur
+   **« Appliquer codes-barres (sans stock) »**.
+
+Les deux opérations sont **sans risque** (aucune suppression, rien sur le stock)
+et **répétables** (jamais de doublon).
+
+> Note : un article a deux champs, `CODE_BARRES` (60 car.) et `CODE_BARRE`
+> (35 car.), en plus de la table `EQUIV_CBARRES`. L'outil renseigne **les
+> trois**, pour que le code-barres apparaisse quel que soit le champ lu par
+> votre logiciel.
 
 ### Prompt OCR (photo → Excel)
 

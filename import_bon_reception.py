@@ -991,24 +991,31 @@ def mode_list_tiers(cfg, out_path):
 
 
 def mode_sync_barcodes(cfg, out_path=None):
-    """Repare les articles DEJA importes : recopie ARTICLE.CODE_BARRES vers
-    EQUIV_CBARRES (la table que le logiciel affiche dans la fiche article), pour
-    tout article qui porte un code-barres sans ligne EQUIV correspondante.
-    Idempotent : relancer n'ajoute pas de doublon."""
+    """Repare les articles DEJA importes : pour chaque article, lit les DEUX
+    champs ARTICLE.CODE_BARRES (60) ET ARTICLE.CODE_BARRE (35), et alimente
+    EQUIV_CBARRES (la table que le logiciel affiche dans la fiche article) avec
+    chaque code-barres trouve. Complete aussi le champ ARTICLE vide a partir de
+    l'autre. Idempotent : relancer n'ajoute pas de doublon."""
     con = connect(cfg)
     imp = Importer(con, cfg)
     try:
         cur = con.cursor()
         cur.execute(
-            "SELECT REF_ART, CODE_BARRES FROM ARTICLE "
-            "WHERE CODE_BARRES IS NOT NULL AND CHAR_LENGTH(TRIM(CODE_BARRES)) > 0")
+            "SELECT REF_ART, CODE_BARRES, CODE_BARRE FROM ARTICLE "
+            "WHERE (CODE_BARRES IS NOT NULL AND CHAR_LENGTH(TRIM(CODE_BARRES)) > 0) "
+            "   OR (CODE_BARRE  IS NOT NULL AND CHAR_LENGTH(TRIM(CODE_BARRE))  > 0)")
         rows = cur.fetchall()
-        added = 0
-        for ref, bc in rows:
-            bc = (bc or "").strip()
-            if bc and imp.add_barcode_equiv(ref, bc):
-                added += 1
+        for ref, bc1, bc2 in rows:
+            seen = set()
+            for bc in (bc1, bc2):                 # les DEUX champs
+                bc = (bc or "").strip()
+                if bc and bc not in seen:
+                    seen.add(bc)
+                    # sync_barcode : ajoute dans EQUIV_CBARRES + complete le champ
+                    # ARTICLE vide (CODE_BARRES/CODE_BARRE) si libre.
+                    imp.sync_barcode(ref, bc)
         con.commit()
+        added = len(imp.barcode_added)
         msg = ("Synchronisation codes-barres : %d article(s) avec code-barres ; "
                "%d ajoute(s) dans EQUIV_CBARRES ; %d ignore(s)."
                % (len(rows), added, len(imp.barcode_skipped)))
@@ -1019,6 +1026,52 @@ def mode_sync_barcodes(cfg, out_path=None):
     except Exception as exc:
         con.rollback()
         print("ECHEC synchronisation : %s" % exc, file=sys.stderr); sys.exit(1)
+    finally:
+        con.close()
+
+
+def mode_apply_barcodes(cfg, lines, out_path=None):
+    """Applique les codes-barres de 'lines' (un Excel fournisseur, ou la table de
+    la GUI) aux articles DEJA EXISTANTS — EQUIV_CBARRES (table affichee) +
+    ARTICLE.CODE_BARRES si vide — SANS creer de bon de reception ni toucher au
+    stock. Sert a reparer des articles importes avant la gestion des codes-barres :
+    re-fournir le meme fichier applique uniquement les codes-barres.
+    Rapproche par REFERENCE ; un article introuvable est signale, pas cree."""
+    con = connect(cfg)
+    imp = Importer(con, cfg)
+    try:
+        applied = notfound = nobc = 0
+        notfound_refs = []
+        for ln in lines:
+            ref = ln.get("ref_art")
+            barcode = imp._barcode_for_line(ln, ref)
+            if not barcode:
+                nobc += 1
+                continue
+            if not imp.exists("SELECT 1 FROM ARTICLE WHERE REF_ART = ?", (ref,)):
+                notfound += 1
+                if len(notfound_refs) < 20:
+                    notfound_refs.append(ref)
+                continue
+            before = len(imp.barcode_added)
+            imp.sync_barcode(ref, barcode)
+            if len(imp.barcode_added) > before:
+                applied += 1
+        con.commit()
+        print("Application codes-barres (sans bon, sans stock) :")
+        print("  appliques        : %d" % applied)
+        print("  sans code-barres : %d" % nobc)
+        print("  articles introuvables : %d %s"
+              % (notfound, notfound_refs if notfound_refs else ""))
+        print("  ignores (doublon/conflit) : %d" % len(imp.barcode_skipped))
+        if out_path:
+            _write_json(out_path, {"applied": applied, "no_barcode": nobc,
+                                   "not_found": notfound,
+                                   "not_found_refs": notfound_refs,
+                                   "skipped": len(imp.barcode_skipped)})
+    except Exception as exc:
+        con.rollback()
+        print("ECHEC application codes-barres : %s" % exc, file=sys.stderr); sys.exit(1)
     finally:
         con.close()
 
@@ -1075,6 +1128,9 @@ def main():
     ap.add_argument("--cancel-piece", help="Annule le bon NOPIECE donne (ANNULEE=0)")
     ap.add_argument("--sync-barcodes", action="store_true",
                     help="Repare les articles deja importes : copie CODE_BARRES -> EQUIV_CBARRES")
+    ap.add_argument("--apply-barcodes", action="store_true",
+                    help="Applique les codes-barres d'un Excel/--lines aux articles existants "
+                         "(sans bon, sans stock)")
     ap.add_argument("--make-template", help="Cree un modele Excel au chemin donne")
     ap.add_argument("--out", help="Fichier JSON de sortie (modes --match/--check-dup/--list-*)")
     args = ap.parse_args()
@@ -1115,6 +1171,8 @@ def main():
     if args.check_dup:
         if not args.out: sys.exit("--check-dup requiert --out.")
         mode_check_dup(cfg, lines, args.out); return
+    if args.apply_barcodes:
+        mode_apply_barcodes(cfg, lines, args.out); return
 
     print("Lignes lues dans l'Excel : %d" % len(lines))
 

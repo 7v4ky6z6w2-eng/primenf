@@ -550,6 +550,14 @@ def _window_class():
                 "visibles dans la fiche article (copie vers EQUIV_CBARRES).")
             self.btn_sync_bc.clicked.connect(self.run_sync_barcodes_action)
 
+            self.btn_apply_bc = QPushButton("Appliquer codes-barres (sans stock)")
+            self.btn_apply_bc.setToolTip(
+                "Reprend les codes-barres du fichier/table charge et les applique "
+                "aux articles EXISTANTS (sans creer de bon ni toucher au stock). "
+                "Ideal pour corriger d'anciens imports : rechargez le meme Excel "
+                "fournisseur puis cliquez ici.")
+            self.btn_apply_bc.clicked.connect(self.run_apply_barcodes_action)
+
             self.btn_repair = QPushButton("Reparer l'arabe")
             self.btn_repair.setToolTip(
                 "Corriger sur place les noms arabes deformes par un import en UTF8 "
@@ -569,6 +577,7 @@ def _window_class():
             actions.addWidget(self.btn_undo)
             actions.addWidget(self.btn_template)
             actions.addWidget(self.btn_sync_bc)
+            actions.addWidget(self.btn_apply_bc)
             actions.addWidget(self.btn_repair); actions.addWidget(self.btn_clean)
             actions.addWidget(self.btn_cancel)
             root.addLayout(actions)
@@ -1842,7 +1851,8 @@ def _window_class():
             ok = QMessageBox.question(
                 self, "Synchroniser les codes-barres",
                 "Rendre visibles dans la fiche article les codes-barres des "
-                "articles deja importes (copie de CODE_BARRES vers EQUIV_CBARRES).\n\n"
+                "articles deja importes : lit les DEUX champs (CODE_BARRES et "
+                "CODE_BARRE) et les recopie vers EQUIV_CBARRES.\n\n"
                 "Operation sans risque (aucune suppression, rien sur le stock) et "
                 "repetable. Sauvegardez tout de meme la base au prealable.\n\nLancer ?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1893,6 +1903,74 @@ def _window_class():
                     "%s code(s)-barres rendu(s) visible(s) dans la fiche article." % n)
             else:
                 self.status.setText("Synchronisation echouee (code %s) — voir Journal." % code)
+
+        # ----- Appliquer les codes-barres du fichier/table (sans bon, sans stock) -----
+        def run_apply_barcodes_action(self):
+            if self.proc is not None:
+                return
+            if not self.f_database.text().strip():
+                QMessageBox.warning(self, "A corriger", "Renseignez la base Firebird (.FDB)."); return
+            if self.preview_table.rowCount() == 0:
+                QMessageBox.warning(self, "Table vide",
+                                    "Chargez d'abord le fichier Excel fournisseur (avec ses codes-barres)."); return
+            if not self.script_path:
+                QMessageBox.warning(self, "A corriger", "Outil introuvable."); return
+            ok = QMessageBox.question(
+                self, "Appliquer les codes-barres",
+                "Appliquer les codes-barres de la table aux articles EXISTANTS "
+                "(EQUIV_CBARRES + CODE_BARRES/CODE_BARRE).\n\n"
+                "AUCUN bon de reception n'est cree et le STOCK n'est PAS touche : "
+                "c'est l'outil pour corriger d'anciens imports sans rien dupliquer.\n\n"
+                "Sauvegardez la base au prealable. Lancer ?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if ok != QMessageBox.StandardButton.Yes:
+                return
+            try:
+                self.tmp_config_path, self.tmp_lines_path = self._write_tmp_config_and_lines()
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.critical(self, "Erreur", "Preparation : %s" % exc); return
+
+            cli = ["--run-cli", "--config", self.tmp_config_path,
+                   "--lines", self.tmp_lines_path, "--apply-barcodes"]
+            if getattr(sys, "frozen", False):
+                program, args = sys.executable, cli
+            else:
+                program, args = sys.executable, [GUI_SCRIPT] + cli
+
+            self.log.clear()
+            self._append_log("$ %s\n" % " ".join(self._q(a) for a in [program] + args))
+
+            self.proc = QProcess(self)
+            self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+            self.proc.readyReadStandardOutput.connect(self._on_output)
+            self.proc.finished.connect(self._on_apply_barcodes_finished)
+            self.proc.errorOccurred.connect(self._on_proc_error)
+            self._set_running(True)
+            self.status.setText("Application des codes-barres (sans stock)…")
+            self.proc.setProgram(program); self.proc.setArguments(args); self.proc.start()
+
+        def _on_apply_barcodes_finished(self, code, _st):
+            text = self.log.toPlainText()
+            self.proc = None
+            self._set_running(False)
+            for p in (self.tmp_config_path, self.tmp_lines_path):
+                if p and os.path.isfile(p):
+                    try: os.remove(p)
+                    except OSError: pass
+            self.tmp_config_path = None; self.tmp_lines_path = None
+            if code == 0:
+                m = re.search(r"appliques\s*:\s*(\d+)", text)
+                nf = re.search(r"introuvables\s*:\s*(\d+)", text)
+                n = m.group(1) if m else "?"
+                extra = (" — %s article(s) introuvable(s)" % nf.group(1)) if (nf and nf.group(1) != "0") else ""
+                self.status.setText("Codes-barres appliques : %s%s." % (n, extra))
+                QMessageBox.information(
+                    self, "Codes-barres appliques",
+                    "%s code(s)-barres appliques aux articles existants%s.\n\n"
+                    "Aucun bon cree, stock inchange." % (n, extra))
+            else:
+                self.status.setText("Application echouee (code %s) — voir Journal." % code)
 
         # ----- Nettoyage des articles corrompus « ? » -----
         def run_clean_action(self):
@@ -2045,7 +2123,7 @@ def _window_class():
                 self.busy.setValue(0)
             for b in (self.btn_preview, self.btn_import, self.btn_test, self.btn_load_lists,
                       self.btn_match, self.btn_clean, self.btn_repair, self.btn_template,
-                      self.btn_sync_bc, self.adv):
+                      self.btn_sync_bc, self.btn_apply_bc, self.adv):
                 b.setEnabled(not running)
             self.btn_cancel.setEnabled(running)
 
