@@ -153,6 +153,28 @@ pris en charge tel quel.
 Utilisez le bouton **« Créer un modèle Excel »** (GUI) ou la commande
 `--make-template` pour obtenir un fichier `.xlsx` prêt à remplir.
 
+## Bons au format PDF
+
+L'outil lit aussi un **bon fournisseur en PDF** (bouton **« Parcourir… »** →
+choisir un `.pdf`, ou `--pdf bon.pdf` en ligne de commande). Les colonnes
+`Référence`, `Désignation`, `Qté`, `Prix Unitaire` sont reconnues
+automatiquement, et le résultat remplit l'aperçu éditable comme un Excel.
+
+> **Couche texte cassée.** Beaucoup de logiciels exportent un PDF dont le texte
+> *copié* est faux : à l'écran les nombres sont corrects, mais à la copie
+> certains chiffres deviennent des lettres arabes (`2` → `س`) ou disparaissent
+> (`1`). L'outil **reconstruit le vrai texte à partir des glyphes de la police
+> embarquée** (toujours corrects), donc l'import est fiable — **sans OCR, sans
+> internet, sans coût**.
+>
+> **Vérification automatique :** comme le bon contient Qté, Prix et Montant,
+> chaque ligne est contrôlée par `Qté × Prix = Montant`. Toute ligne qui ne
+> tombe pas juste est surlignée (statut **« VERIF MONTANT »**) pour relecture
+> avant import.
+
+Dépendances PDF (incluses dans l'exe) : `pikepdf`, `pdfplumber`, `fonttools`.
+En script : `pip install pikepdf pdfplumber fonttools`.
+
 ### Référence ajoutée à la désignation
 
 Certains fournisseurs donnent une **référence** (et parfois un code-barres)

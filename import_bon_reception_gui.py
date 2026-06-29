@@ -390,7 +390,7 @@ def _window_class():
         # ---- creation des widgets de saisie (noms stables) -------------- #
         def _create_fields(self):
             self.excel_edit = QLineEdit(readOnly=True)
-            self.excel_edit.setPlaceholderText("Fichier .xlsx du fournisseur…")
+            self.excel_edit.setPlaceholderText("Fichier .xlsx ou .pdf du fournisseur…")
 
             self.f_database = QLineEdit()
             self.f_database.setPlaceholderText("C:\\PRIME\\PR22.FDB")
@@ -473,7 +473,7 @@ def _window_class():
             ess = QGroupBox("L'essentiel")
             g = QGridLayout(ess); g.setColumnStretch(1, 1)
 
-            g.addWidget(QLabel("<b>Fichier Excel</b>"), 0, 0, Qt.AlignmentFlag.AlignRight)
+            g.addWidget(QLabel("<b>Fichier (Excel/PDF)</b>"), 0, 0, Qt.AlignmentFlag.AlignRight)
             g.addWidget(self.excel_edit, 0, 1)
             b1 = QPushButton("Parcourir…"); b1.clicked.connect(self.pick_excel)
             g.addWidget(b1, 0, 2)
@@ -795,9 +795,17 @@ def _window_class():
                 self._apply_defaults_from_tool(); self._refresh_script_banner()
 
         def pick_excel(self):
-            path, _f = QFileDialog.getOpenFileName(self, "Choisir l'Excel", "", "Excel (*.xlsx *.xlsm)")
+            path, _f = QFileDialog.getOpenFileName(
+                self, "Choisir le fichier fournisseur (Excel ou PDF)", "",
+                "Fournisseur (*.xlsx *.xlsm *.pdf);;Excel (*.xlsx *.xlsm);;PDF (*.pdf)")
             if path:
                 self.excel_edit.setText(path); self.load_preview(path)
+
+        def _read_source(self, path, cfg):
+            """Lit le fichier fournisseur selon son extension (PDF ou Excel)."""
+            if path.lower().endswith(".pdf"):
+                return self.tool_mod.read_pdf(path, cfg)
+            return self.tool_mod.read_excel(path, cfg)
 
         def pick_fdb(self):
             path, _f = QFileDialog.getOpenFileName(self, "Choisir la base", "", "Firebird (*.fdb *.FDB);;Tous (*)")
@@ -818,15 +826,23 @@ def _window_class():
                 self.preview_count.setText(
                     "Apercu hors-ligne indisponible. Utilisez « Apercu (dry-run) ».")
                 return
+            is_pdf = path.lower().endswith(".pdf")
+            if is_pdf:
+                self.preview_count.setText("Lecture du PDF en cours…")
+                QApplication.processEvents()
             try:
                 base = json.loads(json.dumps(getattr(self.tool_mod, "DEFAULT_CONFIG", {})))
                 base.update(self._build_config_dict())
-                lines = self.tool_mod.read_excel(path, base)
+                lines = self._read_source(path, base)
             except Exception as exc:  # noqa: BLE001
                 self.preview_count.setText("Lecture impossible : %s" % friendly_error(str(exc)))
                 return
             self._fill_table_from_lines(lines, base)
+            bad = self._flag_recon(lines)
             msg = ("%d ligne(s)  ·  Total HT indicatif apres apercu dry-run)" % len(lines))
+            if is_pdf:
+                msg = ("PDF : %d ligne(s) lue(s)" % len(lines)
+                       + (" · %d a verifier (montant)" % bad if bad else " · montants OK"))
             charset = str(base.get("charset", "")).upper()
             desigs = [ln.get("designation") or "" for ln in lines]
 
@@ -1028,6 +1044,25 @@ def _window_class():
                 self.preview_count.setStyleSheet("color:#7a1f1f; font-weight:bold;")
                 cur = self.preview_count.text().split(" | ")[0]
                 self.preview_count.setText(cur + " | %d anomalie(s) OCR detectee(s)" % warnings)
+
+        def _flag_recon(self, lines):
+            """Colore (orange) les lignes d'un PDF dont Qte x Prix != Montant —
+            signe d'une lecture douteuse a verifier. Retourne le nombre."""
+            bad = 0
+            with self._suspend_cellchanged():
+                for r, ln in enumerate(lines):
+                    if r >= self.preview_table.rowCount():
+                        break
+                    if ln.get("recon") is False:
+                        bad += 1
+                        for c in range(self.preview_table.columnCount()):
+                            it = self.preview_table.item(r, c)
+                            if it:
+                                it.setBackground(COLOR_WARN)
+                        st = self.preview_table.item(r, self.COL_STATUT)
+                        if st:
+                            st.setText("VERIF MONTANT")
+            return bad
 
         # ---- collecte des lignes depuis la table ------------------------ #
         def _collect_lines_from_table(self):
@@ -1490,7 +1525,7 @@ def _window_class():
             try:
                 cfg = json.loads(json.dumps(getattr(self.tool_mod, "DEFAULT_CONFIG", {})))
                 cfg.update(self._build_config_dict()); cfg["charset"] = "UTF8"
-                lines = self.tool_mod.read_excel(path, cfg)
+                lines = self._read_source(path, cfg)
             except Exception:  # noqa: BLE001
                 return ""
             has_arabic = any(any(ord(c) >= 0x100 for c in (ln.get("designation") or ""))

@@ -61,6 +61,10 @@ Write-Host "`n== Construction de l'executable ==" -ForegroundColor Cyan
     --collect-all openpyxl `
     --collect-all et_xmlfile `
     --collect-all fdb `
+    --collect-all pikepdf `
+    --collect-all pdfplumber `
+    --collect-all pdfminer `
+    --collect-all fontTools `
     --add-data "import_bon_reception.py;." `
     --add-data "nettoyer_articles.py;." `
     --add-data "reparer_encodage.py;." `
