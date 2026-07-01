@@ -343,6 +343,23 @@ Elle offre en plus :
   la référence fournisseur d'origine est restaurée automatiquement (un nouvel
   article sera créé), sans avoir à la ressaisir. Le clic droit permet aussi de
   revenir sur un refus.
+
+  **Rapprochement strict, en deux temps**, pour éviter de retrouver un article
+  totalement différent (même numéro de conditionnement, ex. « 100 » recopié
+  d'une contenance, + un simple mot de catégorie comme « feutre »/« gomme ») :
+  1. le numéro « code » partagé (**≥ 4 chiffres**, hors formats/contenances
+     type `100F`, `24x32`, `9gr`, exclus car communs à des dizaines
+     d'articles) ;
+  2. **et en plus**, au moins **2 mots significatifs communs**, en ignorant les
+     mots trop fréquents dans votre base (catégories génériques comme
+     « feutre », « gomme », « compas », détectés automatiquement par leur
+     fréquence, + une petite liste fixe : *art, bte, boîte, set, kit, couleur,
+     scolaire, extra, blanc…*).
+
+  Exception : si le numéro ne correspond **qu'à un seul** article de toute la
+  base (aucune ambiguïté possible), un seul mot commun suffit — utile pour une
+  désignation très courte. Sinon, en cas de recouvrement insuffisant, la ligne
+  reste **« nouveau »** plutôt que de risquer un mauvais rapprochement.
 - **MAJ Prix achat** : cochez la case d'une ligne pour mettre à jour le prix
   d'achat d'un article existant (avec alerte si l'écart dépasse le seuil configuré).
 - **Charger les listes** : après un test de connexion, remplit les listes
