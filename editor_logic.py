@@ -35,8 +35,6 @@ class Cols:
 
     REF = "REF_ART"            # reference article = code scanne (cle naturelle)
     DESIGNATION = "DESIGNATION"
-    CODE_BARRES = "CODE_BARRES"   # VARCHAR(60)
-    CODE_BARRE = "CODE_BARRE"     # VARCHAR(35)
     PV_HT = "PRIXVENTEHT"
     PV_TTC = "PRIXVENTETTC"
     PA_HT = "PRIXACHATHT"
@@ -45,14 +43,17 @@ class Cols:
     FAMILLE = "CODEFAMILLE"
     QTE_CARTON = "QTEPCARTON"   # quantite par carton (numerique)
 
-    #: Colonnes affichees dans la grille, dans l'ordre.
-    DISPLAY = [REF, DESIGNATION, CODE_BARRES, CODE_BARRE,
-               PV_HT, PV_TTC, TVA, PA_HT, QTE_CARTON, FAMILLE]
+    #: Colonne VIRTUELLE : codes equivalents (table EQUIV_CBARRES, 0..n codes
+    #: par article). Remplace les anciennes colonnes CODE_BARRES / CODE_BARRE.
+    CODES_EQUIV = "__codes_equiv__"
+
+    #: Colonnes affichees dans la grille, dans l'ordre. (CODES_EQUIV est
+    #: inseree dynamiquement par l'interface si la table existe.)
+    DISPLAY = [REF, DESIGNATION, PV_HT, PV_TTC, TVA, PA_HT, QTE_CARTON, FAMILLE]
 
     #: Colonnes que l'utilisateur peut modifier dans l'editeur.
     #: (FAMILLE = CODEFAMILLE : affectation/creation geree avec garde-fou FK)
-    EDITABLE = {REF, CODE_BARRES, CODE_BARRE, PV_HT, PV_TTC, TVA, FAMILLE,
-                QTE_CARTON}
+    EDITABLE = {REF, PV_HT, PV_TTC, TVA, FAMILLE, QTE_CARTON}
 
     #: Champs "prix de vente" qui doivent rester IDENTIQUES entre eux dans la
     #: base PRIME (HT et TTC contiennent le meme prix de vente saisi).
@@ -65,6 +66,15 @@ class Cols:
     FAMILLE_PARENT = "CODEFAMILLE_M"
     FAMILLE_TVA = "TAUX_TVA"
 
+    #: Table des codes equivalents (plusieurs codes-barres par article).
+    #: PRIME : EQUIV_CBARRES(NOEQUIV_CBARRES=PK, REF_ART=FK, CODE_BARRES).
+    EQUIV_TABLE = "EQUIV_CBARRES"
+    EQUIV_PK = "NOEQUIV_CBARRES"
+    EQUIV_REF = "REF_ART"
+    EQUIV_CODE = "CODE_BARRES"
+    EQUIV_GEN = "NEXTEQUIV_CBARRES"
+    EQUIV_CODE_LEN = 60
+
     #: Colonnes numeriques (prix / taux / quantites).
     NUMERIC = {PV_HT, PV_TTC, PA_HT, PA_TTC, TVA, QTE_CARTON}
 
@@ -73,8 +83,6 @@ class Cols:
     #: tables systeme (voir article_db.introspect_lengths).
     DEFAULT_MAX_LEN = {
         REF: 35,
-        CODE_BARRES: 60,
-        CODE_BARRE: 35,
         DESIGNATION: 100,
     }
 
@@ -82,8 +90,7 @@ class Cols:
     LABELS = {
         REF: "Ref. Art.",
         DESIGNATION: "Designation",
-        CODE_BARRES: "Code-barres (60)",
-        CODE_BARRE: "Code-barre (35)",
+        CODES_EQUIV: "Codes equiv.",
         PV_HT: "Prix vente HT",
         PV_TTC: "Prix vente TTC",
         TVA: "TVA %",
@@ -145,6 +152,34 @@ def fmt_price(value) -> str:
         return f"{float(value):.2f}"
     except (TypeError, ValueError):
         return str(value)
+
+
+def split_codes(text):
+    """Decoupe une saisie de codes equivalents en liste de codes.
+
+    Separateurs acceptes : point-virgule, virgule ou retour a la ligne.
+    Les doublons sont elimines en conservant l'ordre de saisie.
+
+    >>> split_codes("123 ; 456;123")
+    ['123', '456']
+    >>> split_codes("")
+    []
+    """
+    if text is None:
+        return []
+    import re
+    out, seen = [], set()
+    for part in re.split(r"[;,\n]", str(text)):
+        part = part.strip()
+        if part and part not in seen:
+            seen.add(part)
+            out.append(part)
+    return out
+
+
+def join_codes(codes) -> str:
+    """Liste de codes -> texte affichable/editable ('123 ; 456')."""
+    return " ; ".join(str(c) for c in (codes or []) if c not in (None, ""))
 
 
 def encoded_len(text, codec="cp1252") -> int:
@@ -334,8 +369,6 @@ def _ireplace(text, find, repl):
 COLUMN_ALIASES = {
     Cols.REF: ["ref_art", "reference", "ref", "code_article", "codearticle"],
     Cols.DESIGNATION: ["designation", "libelle", "intitule", "designation_1"],
-    Cols.CODE_BARRES: ["code_barres", "codebarres", "code_barre_s"],
-    Cols.CODE_BARRE: ["code_barre", "codebarre", "ean", "ean13", "gencode"],
     Cols.PV_HT: ["prixventeht", "pv_ht", "prix_vente_ht", "pvht"],
     Cols.PV_TTC: ["prixventettc", "pv_ttc", "prix_vente_ttc", "pvttc"],
     Cols.PA_HT: ["prixachatht", "pa_ht", "prix_achat_ht", "paht"],

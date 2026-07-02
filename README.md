@@ -9,7 +9,7 @@ demandé :
 | **Prix de vente** | `PRIXVENTEHT` **et** `PRIXVENTETTC` reçoivent la même valeur (la TVA n'est pas modifiée) |
 | **TVA** | `TAUX_TVA` (édition du taux en masse, indépendante du prix) |
 | **Référence article** | `REF_ART` (= le code scanné) |
-| **Code-barres** | `CODE_BARRES` (60) et `CODE_BARRE` (35) |
+| **Codes équivalents** | table `EQUIV_CBARRES` — **plusieurs codes-barres par article** (séparés par `;` dans la grille) |
 | **Famille** | `CODEFAMILLE` — affectation **et création** d'une famille (code + nom) |
 
 Le schéma a été repris de votre script `import_bon_reception.py` ; l'application
@@ -117,12 +117,12 @@ Points importants :
 
 ## Utilisation
 
-1. **Rechercher / filtrer** : tapez une référence, un code-barres ou un libellé,
-   puis *Filtrer* (recherche sur `REF_ART`, `CODE_BARRES`, `CODE_BARRE`,
-   `DESIGNATION`).
+1. **Rechercher / filtrer** : tapez une référence, un code équivalent ou un
+   libellé, puis *Filtrer* (recherche sur `REF_ART`, `DESIGNATION` et les
+   codes de la table `EQUIV_CBARRES`).
 2. **Sélectionner** une ou plusieurs lignes (Ctrl+clic, Maj+clic).
 3. **Modifier**, au choix :
-   * **Double-clic** sur une cellule (réf., code-barres, prix, famille) pour
+   * **Double-clic** sur une cellule (réf., codes équiv., prix, famille) pour
      éditer une valeur unique.
    * **Opérations en masse** (bas de fenêtre) sur la sélection :
      * **Prix de vente** : *Fixer*, *+/- %*, *+/- montant*, ou *Arrondir*.
@@ -132,7 +132,11 @@ Points importants :
        **ne touche jamais au taux de TVA**.
      * **TVA %** : *Fixer la TVA* applique un taux (`TAUX_TVA`) à la sélection,
        indépendamment du prix.
-     * **Code-barres** : *Fixer* une valeur, *Recopier la référence*, *Vider*.
+     * **Codes équivalents** : un article peut avoir **plusieurs codes-barres**
+       (table `EQUIV_CBARRES`). Double-clic sur la colonne *Codes equiv.* :
+       la liste complète s'édite, codes **séparés par `;`** (vider = supprimer
+       tous les codes). En masse : *Ajouter* un ou des codes, *Ajouter la
+       référence* comme code, ou *Vider* tous les codes de la sélection.
      * **Référence** : chercher-remplacer (préfixe/suffixe possible).
      * **Famille** : *Affecter* une famille existante, ou *Créer & affecter*
        une nouvelle famille (**code + nom** obligatoires — créée dans la même
@@ -144,9 +148,11 @@ Points importants :
 
 ### Import / Export
 
-* **Importer Excel/CSV…** : met à jour `PRIXVENTEHT` / `PRIXVENTETTC` /
-  `CODE_BARRES` des articles **par référence** (vous mappez les colonnes du
-  fichier). Pratique en complément de votre import de bons de réception.
+* **Importer Excel/CSV…** : met à jour `PRIXVENTEHT` / `PRIXVENTETTC` et
+  **ajoute des codes équivalents** (plusieurs codes possibles dans une même
+  cellule, séparés par `;`) aux articles **par référence** (vous mappez les
+  colonnes du fichier). Pratique en complément de votre import de bons de
+  réception.
 * **Exporter CSV…** : exporte la vue courante (séparateur `;`, UTF-8 BOM, prêt
   pour Excel).
 
@@ -163,9 +169,9 @@ Faites une **sauvegarde** (`gbak`) avant une campagne de renommage.
 | Fichier | Rôle |
 |---------|------|
 | `bulk_article_editor.py` | Interface graphique Tkinter (point d'entrée). |
-| `article_db.py` | Accès Firebird (`fdb`) : connexion, introspection, lecture, écriture transactionnelle, familles. Inclut un dépôt de démo en mémoire. |
-| `editor_logic.py` | Logique pure (prix, arrondis, HT⇄TTC, chercher-remplacer, validation longueur, détection des colonnes). Sans base ni interface. |
-| `test_editor_logic.py` | Tests unitaires (14) de la logique et du dépôt de démo. |
+| `article_db.py` | Accès Firebird (`fdb`) : connexion, introspection, lecture, écriture transactionnelle, familles, tarifs, codes équivalents. Inclut un dépôt de démo en mémoire. |
+| `editor_logic.py` | Logique pure (prix, arrondis, HT⇄TTC, chercher-remplacer, validation longueur, détection des colonnes, découpage des codes). Sans base ni interface. |
+| `test_editor_logic.py` | Tests unitaires (16) de la logique et du dépôt de démo. |
 | `config.example.json` | Modèle de configuration de connexion. |
 | `requirements.txt` | Dépendances (`fdb`, `openpyxl`). |
 

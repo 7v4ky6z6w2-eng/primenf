@@ -6,7 +6,7 @@ Lancer :  python -m pytest test_editor_logic.py   (ou python test_editor_logic.p
 
 from editor_logic import (parse_number, ht_to_ttc, ttc_to_ht, apply_rounding,
                           PriceOp, TextOp, fit_text, encoded_len, detect_columns,
-                          Cols)
+                          split_codes, join_codes, Cols)
 
 
 # --- conversion de nombres ------------------------------------------------- #
@@ -95,6 +95,18 @@ def test_fit_text():
     assert s == "é" and trunc is True
 
 
+# --- codes equivalents (liste multi-codes) --------------------------------- #
+def test_split_and_join_codes():
+    assert split_codes("123 ; 456;123") == ["123", "456"]
+    assert split_codes("123,456\n789") == ["123", "456", "789"]
+    assert split_codes("") == []
+    assert split_codes(None) == []
+    assert split_codes("  ") == []
+    assert join_codes(["123", "456"]) == "123 ; 456"
+    assert join_codes([]) == ""
+    assert split_codes(join_codes(["A", "B"])) == ["A", "B"]
+
+
 # --- auto-detection des colonnes ------------------------------------------ #
 def test_detect_columns_real_schema():
     real = ["REF_ART", "DESIGNATION", "CODE_BARRES", "CODE_BARRE",
@@ -103,8 +115,6 @@ def test_detect_columns_real_schema():
     assert m[Cols.REF] == "REF_ART"
     assert m[Cols.PV_HT] == "PRIXVENTEHT"
     assert m[Cols.PV_TTC] == "PRIXVENTETTC"
-    assert m[Cols.CODE_BARRES] == "CODE_BARRES"
-    assert m[Cols.CODE_BARRE] == "CODE_BARRE"
 
 
 def test_detect_columns_variant_schema():
@@ -112,7 +122,6 @@ def test_detect_columns_variant_schema():
     m = detect_columns(real)
     assert m[Cols.REF] == "REFERENCE"
     assert m[Cols.DESIGNATION] == "LIBELLE"
-    assert m[Cols.CODE_BARRE] == "EAN13"
     assert m[Cols.PV_HT] == "PV_HT"
     assert m[Cols.PV_TTC] == "PV_TTC"
     assert m[Cols.TVA] == "TVA"
@@ -133,10 +142,31 @@ def test_demo_repo_price_and_commit():
 def test_demo_repo_rollback():
     from article_db import DemoRepository
     repo = DemoRepository().connect()
-    repo.update_rows([{"ref0": "A002", "values": {Cols.CODE_BARRES: "NEWBARCODE"}}])
+    repo.update_rows([{"ref0": "A002", "values": {Cols.PV_HT: 99.0}}])
     repo.rollback()
     a002 = next(r for r in repo.load() if r[Cols.REF] == "A002")
-    assert a002[Cols.CODE_BARRES] != "NEWBARCODE"
+    assert a002[Cols.PV_HT] != 99.0
+
+
+def test_demo_repo_equiv_codes():
+    from article_db import DemoRepository
+    repo = DemoRepository().connect()
+    assert repo.has_equiv()
+    eq = repo.load_equiv(["A001", "A003"])
+    assert eq["A001"] == ["3001234500017", "3001234500918"]   # multi-codes
+    assert "A003" not in eq
+    # remplacement complet de la liste
+    repo.update_equiv([("A001", ["111", "222", "333"]), ("A003", ["999"])])
+    repo.commit()
+    eq = repo.load_equiv(["A001", "A003"])
+    assert eq["A001"] == ["111", "222", "333"]
+    assert eq["A003"] == ["999"]
+    # liste vide = suppression de tous les codes
+    repo.update_equiv([("A003", [])])
+    assert "A003" not in repo.load_equiv(["A003"])
+    # recherche par code equivalent
+    refs = {r[Cols.REF] for r in repo.load(search="222")}
+    assert refs == {"A001"}
 
 
 def test_demo_repo_create_famille_and_assign():

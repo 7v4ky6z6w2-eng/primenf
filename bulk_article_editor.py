@@ -10,7 +10,8 @@ a la fois :
 
     * le PRIX DE VENTE  (PRIXVENTEHT / PRIXVENTETTC)
     * la REFERENCE      (REF_ART)
-    * le CODE-BARRES    (CODE_BARRES / CODE_BARRE)
+    * les CODES EQUIVALENTS (table EQUIV_CBARRES : plusieurs codes-barres
+      par article, separes par ';' dans la grille)
 
 Fonctions principales
 ---------------------
@@ -21,7 +22,7 @@ Fonctions principales
         * Prix : fixer / +%, -% / +montant, -montant / arrondi (.99, .95, 0,50...)
                  au choix sur le HT ou le TTC, avec recalcul automatique de
                  l'autre via le taux de TVA.
-        * Code-barres : fixer / vider / recopier la reference.
+        * Codes equivalents : ajouter / vider / ajouter la reference.
         * Reference : prefixe / suffixe / chercher-remplacer.
   - Recap des modifications en attente, puis ENREGISTRER (commit) ou ANNULER
     (rollback) — le tout dans une seule transaction.
@@ -48,7 +49,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from editor_logic import (Cols, PriceOp, TextOp, fmt_price, parse_number,
-                          encoded_len)
+                          encoded_len, split_codes, join_codes)
 import article_db
 from article_db import ArticleRepository, DemoRepository, DBError, load_config, save_config
 
@@ -273,10 +274,17 @@ class BulkEditorApp(ttk.Frame):
         self.new_familles = {}    # code -> (intitule, tva) familles a creer au commit
         self.pending_tarifs = {}  # ref0 -> {type_code: prix}
         self.tarif_data = {}      # ref0 -> {type_code: prix} charge depuis la base
+        self.pending_equiv = {}   # ref0 -> [codes] (remplace la liste complete)
+        self.equiv_data = {}      # ref0 -> [codes] charges depuis la base
         self._sort_col = None     # colonne de tri active (None = ordre naturel)
         self._sort_rev = False    # True = descendant
 
         self.columns = repo.display_columns()
+        self.equiv_enabled = getattr(repo, "has_equiv", lambda: False)()
+        if self.equiv_enabled:
+            pos = (self.columns.index(Cols.DESIGNATION) + 1
+                   if Cols.DESIGNATION in self.columns else 1)
+            self.columns.insert(pos, Cols.CODES_EQUIV)
         try:
             self.tarif_types = repo.load_tarif_types()
         except Exception:         # noqa: BLE001
@@ -295,10 +303,9 @@ class BulkEditorApp(ttk.Frame):
     def change_database(self):
         """Rouvre l'ecran de connexion et reconstruit l'application sur la base
         choisie (le schema peut differer : on recree toute l'interface)."""
-        if (self.pending or self.new_familles or self.pending_tarifs) and \
-                not messagebox.askyesno(
-                    APP_TITLE, "Des modifications ne sont pas enregistrees. "
-                    "Changer de base et les abandonner ?"):
+        if self._has_pending() and not messagebox.askyesno(
+                APP_TITLE, "Des modifications ne sont pas enregistrees. "
+                "Changer de base et les abandonner ?"):
             return
         start_cfg = getattr(self.repo, "cfg", None) or dict(article_db.DEFAULT_CONFIG)
         repo, cfg = prompt_connection(self.master, start_cfg)
@@ -347,8 +354,8 @@ class BulkEditorApp(ttk.Frame):
 
         self.tree = ttk.Treeview(wrap, columns=self.columns, show="headings",
                                  selectmode="extended")
-        widths = {Cols.REF: 90, Cols.DESIGNATION: 230, Cols.CODE_BARRES: 130,
-                  Cols.CODE_BARRE: 110, Cols.PV_HT: 90, Cols.PV_TTC: 90,
+        widths = {Cols.REF: 90, Cols.DESIGNATION: 230, Cols.CODES_EQUIV: 180,
+                  Cols.PV_HT: 90, Cols.PV_TTC: 90,
                   Cols.TVA: 60, Cols.PA_HT: 90, Cols.QTE_CARTON: 80,
                   Cols.FAMILLE: 110}
         for c in self.columns:
@@ -427,21 +434,24 @@ class BulkEditorApp(ttk.Frame):
 
         ttk.Separator(panel, orient="vertical").grid(row=0, column=1, sticky="ns", padx=8)
 
-        # --- Code-barres ---
-        cb = ttk.Frame(panel)
-        cb.grid(row=0, column=2, sticky="w", padx=(0, 16))
-        ttk.Label(cb, text="CODE-BARRES", font=("", 9, "bold")).grid(
-            row=0, column=0, columnspan=3, sticky="w")
-        self.cb_value = tk.StringVar()
-        ttk.Entry(cb, textvariable=self.cb_value, width=18).grid(row=1, column=0, columnspan=2, pady=2)
-        ttk.Button(cb, text="Fixer", width=8,
-                   command=lambda: self.apply_text(Cols.CODE_BARRES, TextOp("set", self.cb_value.get()))
-                   ).grid(row=1, column=2, padx=2)
-        ttk.Button(cb, text="Recopier la reference", width=20,
-                   command=self.copy_ref_to_barcode).grid(row=2, column=0, columnspan=2, pady=2, sticky="w")
-        ttk.Button(cb, text="Vider", width=8,
-                   command=lambda: self.apply_text(Cols.CODE_BARRES, TextOp("clear"))
-                   ).grid(row=2, column=2, padx=2)
+        # --- Codes equivalents (plusieurs codes-barres par article) ---
+        if self.equiv_enabled:
+            cb = ttk.Frame(panel)
+            cb.grid(row=0, column=2, sticky="w", padx=(0, 16))
+            ttk.Label(cb, text="CODES EQUIV.", font=("", 9, "bold")).grid(
+                row=0, column=0, columnspan=3, sticky="w")
+            ttk.Label(cb, text="(plusieurs codes possibles, separes par ;)",
+                      foreground="#888").grid(row=1, column=0, columnspan=3, sticky="w")
+            self.equiv_value = tk.StringVar()
+            ttk.Entry(cb, textvariable=self.equiv_value, width=18).grid(
+                row=2, column=0, columnspan=2, pady=2)
+            ttk.Button(cb, text="Ajouter", width=8,
+                       command=self.apply_equiv_add).grid(row=2, column=2, padx=2)
+            ttk.Button(cb, text="Ajouter la reference", width=20,
+                       command=self.add_ref_as_equiv).grid(
+                row=3, column=0, columnspan=2, pady=2, sticky="w")
+            ttk.Button(cb, text="Vider", width=8,
+                       command=self.apply_equiv_clear).grid(row=3, column=2, padx=2)
 
         ttk.Separator(panel, orient="vertical").grid(row=0, column=3, sticky="ns", padx=8)
 
@@ -522,16 +532,20 @@ class BulkEditorApp(ttk.Frame):
         ttk.Label(bar, textvariable=self.status, anchor="w").pack(side="left")
 
     # -- chargement / affichage ------------------------------------------
+    def _has_pending(self):
+        return bool(self.pending or self.new_familles or self.pending_tarifs
+                    or self.pending_equiv)
+
     def reload(self):
-        if (self.pending or self.new_familles or self.pending_tarifs) and \
-                not messagebox.askyesno(
-                    APP_TITLE,
-                    "Des modifications ne sont pas enregistrees. "
-                    "Les abandonner et recharger ?"):
+        if self._has_pending() and not messagebox.askyesno(
+                APP_TITLE,
+                "Des modifications ne sont pas enregistrees. "
+                "Les abandonner et recharger ?"):
             return
         self.pending.clear()
         self.new_familles.clear()
         self.pending_tarifs.clear()
+        self.pending_equiv.clear()
         try:
             self.repo.rollback()                 # annule toute ecriture non validee
         except Exception:                        # noqa: BLE001
@@ -546,6 +560,11 @@ class BulkEditorApp(ttk.Frame):
             self.tarif_data = self.repo.load_tarifs(refs)
         except Exception:                        # noqa: BLE001
             self.tarif_data = {}
+        try:
+            self.equiv_data = (self.repo.load_equiv(refs)
+                               if self.equiv_enabled else {})
+        except Exception:                        # noqa: BLE001
+            self.equiv_data = {}
         self._populate()
         self._refresh_famille_combo()
         self._update_save_button()
@@ -565,6 +584,12 @@ class BulkEditorApp(ttk.Frame):
         self.status.set("%d article(s) affiche(s) sur %d  —  table %s"
                         % (len(self.rows), total, self.repo.table))
 
+    def _codes_for(self, ref0):
+        """Codes equivalents courants d'un article (en attente sinon en base)."""
+        if ref0 in self.pending_equiv:
+            return self.pending_equiv[ref0]
+        return self.equiv_data.get(ref0, [])
+
     def _row_values(self, rec):
         vals = []
         ref0 = rec.get("__ref0__")
@@ -574,6 +599,8 @@ class BulkEditorApp(ttk.Frame):
                 v = self.pending_tarifs.get(ref0, {}).get(
                     type_code, self.tarif_data.get(ref0, {}).get(type_code))
                 vals.append(fmt_price(v) if v is not None else "")
+            elif c == Cols.CODES_EQUIV:
+                vals.append(join_codes(self._codes_for(ref0)))
             else:
                 v = rec.get(c)
                 vals.append(fmt_price(v) if c in Cols.NUMERIC else ("" if v is None else str(v)))
@@ -585,7 +612,8 @@ class BulkEditorApp(ttk.Frame):
     def _refresh_row(self, iid, rec):
         self.tree.item(iid, values=self._row_values(rec))
         ref0 = rec.get("__ref0__")
-        modified = ref0 in self.pending or ref0 in self.pending_tarifs
+        modified = (ref0 in self.pending or ref0 in self.pending_tarifs
+                    or ref0 in self.pending_equiv)
         self.tree.item(iid, tags=("modif",) if modified else ())
 
     # -- edition d'une cellule (double-clic) -----------------------------
@@ -630,6 +658,35 @@ class BulkEditorApp(ttk.Frame):
             edit.bind("<Return>", commit_tarif)
             edit.bind("<Escape>", lambda e: edit.destroy())
             edit.bind("<FocusOut>", commit_tarif)
+            return
+
+        # -- colonne codes equivalents (liste editable, separateur ';') ---
+        if logical == Cols.CODES_EQUIV:
+            ref0 = rec.get("__ref0__")
+            box = self.tree.bbox(iid, col_id)
+            if not box:                       # cellule hors champ : on la rend visible
+                self.tree.see(iid)
+                self.update_idletasks()
+                box = self.tree.bbox(iid, col_id)
+            if not box:
+                return
+            x, y, w, h = box
+            edit = tk.Entry(self.tree)
+            edit.insert(0, join_codes(self._codes_for(ref0)))
+            edit.select_range(0, "end")
+            edit.focus_set()
+            edit.place(x=x, y=y, width=max(w, 240), height=h)
+            self.status.set("Codes equivalents : plusieurs codes separes par ';' "
+                            "(vider = supprimer tous les codes), puis Entree.")
+
+            def commit_equiv(_=None):
+                new = edit.get()
+                edit.destroy()
+                self._set_equiv_cell(iid, rec, new)
+
+            edit.bind("<Return>", commit_equiv)
+            edit.bind("<Escape>", lambda e: edit.destroy())
+            edit.bind("<FocusOut>", commit_equiv)
             return
 
         if logical not in Cols.EDITABLE:
@@ -722,6 +779,27 @@ class BulkEditorApp(ttk.Frame):
         self._refresh_row(iid, rec)
         self._update_save_button()
 
+    def _set_equiv_cell(self, iid, rec, new_value):
+        """Valide et met en attente la NOUVELLE liste de codes equivalents.
+
+        La saisie remplace la liste complete : '123 ; 456' = ces deux codes,
+        chaine vide = plus aucun code pour cet article.
+        """
+        ref0 = rec.get("__ref0__")
+        codes = split_codes(new_value)
+        maxb = getattr(self.repo, "equiv_code_max", Cols.EQUIV_CODE_LEN)
+        too_long = [c for c in codes if encoded_len(c, self.repo.codec) > maxb]
+        if too_long:
+            messagebox.showwarning(
+                APP_TITLE, "Code(s) trop long(s) (max %d caracteres), "
+                "sera/seront tronque(s) : %s" % (maxb, ", ".join(too_long)))
+        if codes == list(self.equiv_data.get(ref0, [])):
+            self.pending_equiv.pop(ref0, None)   # revenu a l'etat de la base
+        else:
+            self.pending_equiv[ref0] = codes
+        self._refresh_row(iid, rec)
+        self._update_save_button()
+
     def _sync_price(self, rec, logical, value):
         """Maintient PRIXVENTEHT et PRIXVENTETTC IDENTIQUES.
 
@@ -757,19 +835,22 @@ class BulkEditorApp(ttk.Frame):
         n_tar = sum(len(v) for v in self.pending_tarifs.values())
         extra_tar = (" +%d tarif(s)" % n_tar) if n_tar else ""
         extra_fam = (" +%d fam." % len(self.new_familles)) if self.new_familles else ""
+        extra_eq = (" +%d codes" % len(self.pending_equiv)) if self.pending_equiv else ""
         self.save_btn.config(
-            text="Enregistrer (%d)%s%s" % (len(self.pending), extra_tar, extra_fam))
+            text="Enregistrer (%d)%s%s%s" % (len(self.pending), extra_tar,
+                                             extra_fam, extra_eq))
 
     def discard_changes(self):
-        if not self.pending and not self.new_familles and not self.pending_tarifs:
+        if not self._has_pending():
             return
-        n_total = len(self.pending) + sum(len(v) for v in self.pending_tarifs.values())
+        n_total = (len(self.pending) + len(self.pending_equiv)
+                   + sum(len(v) for v in self.pending_tarifs.values()))
         if messagebox.askyesno(APP_TITLE, "Abandonner les %d modification(s) en attente ?"
                                % n_total):
             self.reload()
 
     def commit_changes(self):
-        if not self.pending and not self.new_familles and not self.pending_tarifs:
+        if not self._has_pending():
             messagebox.showinfo(APP_TITLE, "Aucune modification a enregistrer.")
             return
         changes = [{"ref0": ref0, "values": vals} for ref0, vals in self.pending.items()]
@@ -777,13 +858,16 @@ class BulkEditorApp(ttk.Frame):
         tarif_changes = [(ref0, tc, price)
                          for ref0, tmap in self.pending_tarifs.items()
                          for tc, price in tmap.items()]
+        equiv_changes = list(self.pending_equiv.items())
         detail = self._summary(changes)
         if new_fam:
             detail += "\n\nNouvelles familles : " + ", ".join(
                 "%s (%s)" % (c, n) for c, n, _ in new_fam)
         if tarif_changes:
             detail += "\n\nTarifs modifies : %d prix" % len(tarif_changes)
-        n_items = len(changes) + len(tarif_changes)
+        if equiv_changes:
+            detail += "\n\nCodes equivalents modifies : %d article(s)" % len(equiv_changes)
+        n_items = len(changes) + len(tarif_changes) + len(equiv_changes)
         if not messagebox.askyesno(APP_TITLE,
                                    "Enregistrer %d modification(s) ?\n\n%s"
                                    % (n_items, detail)):
@@ -792,6 +876,8 @@ class BulkEditorApp(ttk.Frame):
             n = self.repo.update_rows(changes, new_familles=new_fam)
             if tarif_changes:
                 self.repo.update_tarifs(tarif_changes)
+            if equiv_changes:
+                self.repo.update_equiv(equiv_changes)
             self.repo.commit()
         except DBError as exc:
             self.repo.rollback()
@@ -802,6 +888,8 @@ class BulkEditorApp(ttk.Frame):
             info += " + %d famille(s)" % len(new_fam)
         if tarif_changes:
             info += " + %d tarif(s)" % len(tarif_changes)
+        if equiv_changes:
+            info += " + codes equiv. de %d article(s)" % len(equiv_changes)
         messagebox.showinfo(APP_TITLE, info + ".")
         self.reload()
 
@@ -878,24 +966,61 @@ class BulkEditorApp(ttk.Frame):
         self.status.set("Qte/carton %s appliquee a %d article(s)."
                         % (fmt_price(qte), len(recs)))
 
-    def copy_ref_to_barcode(self):
-        recs = self._selected_recs()
-        if not recs:
-            return
-        for rec in recs:
-            self._apply_text_to_rec(rec, Cols.CODE_BARRES,
-                                    TextOp("copy_from"), source=rec.get(Cols.REF))
-        self._refresh_all_selected(recs)
-        self.status.set("Reference recopiee dans le code-barres pour %d article(s)." % len(recs))
+    # -- codes equivalents (en masse) --------------------------------------
+    def _add_equiv_codes(self, rec, codes):
+        """Ajoute des codes a la liste d'un article (sans doublons)."""
+        ref0 = rec.get("__ref0__")
+        current = list(self._codes_for(ref0))
+        changed = False
+        for c in codes:
+            if c and c not in current:
+                current.append(c)
+                changed = True
+        if changed:
+            self.pending_equiv[ref0] = current
+        return changed
 
-    def apply_text(self, logical, op):
+    def apply_equiv_add(self):
         recs = self._selected_recs()
         if not recs:
             return
-        for rec in recs:
-            self._apply_text_to_rec(rec, logical, op)
+        codes = split_codes(self.equiv_value.get())
+        if not codes:
+            messagebox.showwarning(
+                APP_TITLE, "Indiquez au moins un code (plusieurs codes : "
+                "separez-les par ';').")
+            return
+        n = sum(1 for rec in recs if self._add_equiv_codes(rec, codes))
         self._refresh_all_selected(recs)
-        self.status.set("Operation '%s' appliquee a %d article(s)." % (op.mode, len(recs)))
+        self.status.set("%d code(s) equivalent(s) ajoute(s) sur %d article(s)."
+                        % (len(codes), n))
+
+    def add_ref_as_equiv(self):
+        recs = self._selected_recs()
+        if not recs:
+            return
+        n = 0
+        for rec in recs:
+            ref = (rec.get(Cols.REF) or "").strip()
+            if ref and self._add_equiv_codes(rec, [ref]):
+                n += 1
+        self._refresh_all_selected(recs)
+        self.status.set("Reference ajoutee aux codes equivalents de %d article(s)." % n)
+
+    def apply_equiv_clear(self):
+        recs = self._selected_recs()
+        if not recs:
+            return
+        n = 0
+        for rec in recs:
+            ref0 = rec.get("__ref0__")
+            if self._codes_for(ref0):
+                self.pending_equiv[ref0] = []
+                n += 1
+            else:
+                self.pending_equiv.pop(ref0, None)
+        self._refresh_all_selected(recs)
+        self.status.set("Codes equivalents vides pour %d article(s)." % n)
 
     def apply_ref_replace(self):
         if not self.repo.has(Cols.REF):
@@ -1037,11 +1162,6 @@ class BulkEditorApp(ttk.Frame):
             self.status.set("Tarif '%s' fixe a %.2f pour %d article(s)."
                             % (type_name, price, n))
 
-    def _apply_text_to_rec(self, rec, logical, op, source=None):
-        new = op.apply(rec.get(logical), source_value=source)
-        rec[logical] = new
-        self._stage(rec, logical, new)
-
     def _refresh_all_selected(self, recs):
         for iid in self.tree.selection():
             self._refresh_row(iid, self.row_by_iid[iid])
@@ -1070,6 +1190,8 @@ class BulkEditorApp(ttk.Frame):
             if col.startswith("__tarif_"):
                 type_code = col[8:-2]
                 v = self.tarif_data.get(rec.get("__ref0__") or "", {}).get(type_code)
+            elif col == Cols.CODES_EQUIV:
+                v = join_codes(self._codes_for(rec.get("__ref0__")))
             else:
                 v = rec.get(col)
             if is_num:
@@ -1105,11 +1227,10 @@ class BulkEditorApp(ttk.Frame):
             return
         with open(path, "w", newline="", encoding="utf-8-sig") as fh:
             w = csv.writer(fh, delimiter=";")
-            w.writerow([Cols.LABELS.get(c, c) for c in self.columns])
+            w.writerow([Cols.LABELS.get(c, self.tarif_labels.get(c, c))
+                        for c in self.columns])
             for rec in self.rows:
-                w.writerow([("" if rec.get(c) is None else
-                             (fmt_price(rec.get(c)) if c in Cols.NUMERIC else rec.get(c)))
-                            for c in self.columns])
+                w.writerow(self._row_values(rec))
         messagebox.showinfo(APP_TITLE, "Export termine :\n%s" % path)
 
     def import_file(self):
@@ -1136,6 +1257,7 @@ class BulkEditorApp(ttk.Frame):
         # construit aussi un index global (la vue peut etre filtree)
         applied, missing = 0, 0
         updates = {}
+        equiv_updates = {}   # ref -> [codes] (colonne 'codes equivalents')
         for row in rows:
             ref = str(row.get(m["ref"], "")).strip()
             if not ref:
@@ -1146,20 +1268,35 @@ class BulkEditorApp(ttk.Frame):
             if m.get("pv_ttc") and row.get(m["pv_ttc"]) not in (None, ""):
                 vals[Cols.PV_TTC] = parse_number(row[m["pv_ttc"]])
             if m.get("cb") and row.get(m["cb"]) not in (None, ""):
-                vals[Cols.CODE_BARRES] = str(row[m["cb"]]).strip()
+                codes = split_codes(row[m["cb"]])
+                if codes and self.equiv_enabled:
+                    equiv_updates[ref] = codes
             if vals:
                 updates[ref] = vals
         # Applique aux lignes visibles ; pour les autres, stage direct par ref.
-        for ref, vals in updates.items():
+        for ref in set(updates) | set(equiv_updates):
             rec = index.get(ref)
+            vals = updates.get(ref) or {}
             if rec is not None:
                 for k, v in vals.items():
                     rec[k] = v
                     self._stage(rec, k, v)
+                if ref in equiv_updates:
+                    self._add_equiv_codes(rec, equiv_updates[ref])
                 applied += 1
             else:
                 # pas dans la vue courante : on programme quand meme la modif
-                self.pending.setdefault(ref, {}).update(vals)
+                if vals:
+                    self.pending.setdefault(ref, {}).update(vals)
+                if ref in equiv_updates:
+                    # ajoute aux codes deja en base (l'ecriture REMPLACE la liste)
+                    try:
+                        existing = (self.repo.load_equiv([ref]) or {}).get(ref, [])
+                    except Exception:                   # noqa: BLE001
+                        existing = []
+                    merged = list(existing) + [c for c in equiv_updates[ref]
+                                               if c not in existing]
+                    self.pending_equiv[ref] = merged
                 missing += 1
         self._populate_keep_pending()
         self._update_save_button()
@@ -1173,7 +1310,8 @@ class BulkEditorApp(ttk.Frame):
         self._populate()
         for iid, rec in self.row_by_iid.items():
             ref0 = rec.get("__ref0__")
-            if ref0 in self.pending or ref0 in self.pending_tarifs:
+            if (ref0 in self.pending or ref0 in self.pending_tarifs
+                    or ref0 in self.pending_equiv):
                 self._refresh_row(iid, rec)
         self._update_sort_indicators()
 
@@ -1193,7 +1331,8 @@ class ImportMappingDialog(tk.Toplevel):
                   ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
         self.vars = {}
         rows = [("ref", "Reference (obligatoire)"), ("pv_ht", "Prix vente HT"),
-                ("pv_ttc", "Prix vente TTC"), ("cb", "Code-barres")]
+                ("pv_ttc", "Prix vente TTC"),
+                ("cb", "Codes equivalents (separes par ;)")]
         from editor_logic import norm
         for i, (key, label) in enumerate(rows, start=1):
             ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", pady=2)
@@ -1351,8 +1490,7 @@ def main(argv=None):
 
 def _on_close(root):
     app = getattr(root, "_app", None)
-    if app is not None and \
-            (app.pending or app.new_familles or app.pending_tarifs) and \
+    if app is not None and app._has_pending() and \
             not messagebox.askyesno(
                 APP_TITLE,
                 "Des modifications ne sont pas enregistrees. Quitter quand meme ?"):
