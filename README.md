@@ -7,10 +7,15 @@ demandé :
 | Champ | Colonne(s) de la table `ARTICLE` |
 |-------|----------------------------------|
 | **Prix de vente** | `PRIXVENTEHT` **et** `PRIXVENTETTC` reçoivent la même valeur (la TVA n'est pas modifiée) |
+| **Prix promo** | `PRIXHTPROMO` / `PRIXTTCPROMO` (même valeur), avec `ACTIVEPROMO` (activée automatiquement) et dates `DATEDEBPROMO` / `DATEFINPROMO` |
 | **TVA** | `TAUX_TVA` (édition du taux en masse, indépendante du prix) |
 | **Référence article** | `REF_ART` (= le code scanné) |
 | **Codes équivalents** | table `EQUIV_CBARRES` — **plusieurs codes-barres par article** (séparés par `;` dans la grille) |
 | **Famille** | `CODEFAMILLE` — affectation **et création** d'une famille (code + nom) |
+
+**Impression d'étiquettes** (directe, sur l'imprimante de votre choix, sans PDF) —
+trois modèles : **M1** 40×20 mm (code-barres + désignation + prix), **M2** 80×20 mm
+(désignation + prix), **M3** 40×20 mm (prix normal barré + prix promo, ticket de remise).
 
 Le schéma a été repris de votre script `import_bon_reception.py` ; l'application
 **détecte automatiquement** les colonnes réelles de la base (et leur taille) au
@@ -132,6 +137,11 @@ Points importants :
        **ne touche jamais au taux de TVA**.
      * **TVA %** : *Fixer la TVA* applique un taux (`TAUX_TVA`) à la sélection,
        indépendamment du prix.
+     * **Prix promo** : *Fixer promo* écrit le prix promotionnel (HT et TTC =
+       la même valeur, comme le prix normal) **et active** la promo
+       (`ACTIVEPROMO`) ; dates de début/fin facultatives (`JJ/MM/AAAA`).
+       *Désactiver promo* remet `ACTIVEPROMO` à 0. La colonne *Prix promo*
+       s'édite aussi au double-clic (activation automatique).
      * **Codes équivalents** : un article peut avoir **plusieurs codes-barres**
        (table `EQUIV_CBARRES`). Double-clic sur la colonne *Codes equiv.* :
        la liste complète s'édite, codes **séparés par `;`** (vider = supprimer
@@ -156,6 +166,27 @@ Points importants :
 * **Exporter CSV…** : exporte la vue courante (séparateur `;`, UTF-8 BOM, prêt
   pour Excel).
 
+### Impression d'étiquettes
+
+Sélectionnez des articles, puis **Imprimer étiquettes…** :
+
+1. Choisissez le **modèle** (M1 code-barres + désignation + prix ; M2 désignation
+   + prix ; M3 prix normal barré + prix promo).
+2. Choisissez l'**imprimante** (liste des imprimantes installées) et le **nombre
+   de copies** par article.
+3. Un **aperçu** à l'écran montre l'étiquette du 1ᵉʳ article ; cliquez
+   **Imprimer** pour envoyer directement à l'imprimante (aucun fichier PDF/HTML).
+
+Le **code-barres** est un **Code 128** généré en interne (Python pur), scannable
+par n'importe quelle douchette ; il encode le 1ᵉʳ code équivalent de l'article
+(ou, à défaut, sa référence). Le prix promo n'apparaît sur M3 que si la promo est
+**active**. Les prix sont affichés en dinars (`DA`).
+
+> L'impression directe nécessite **Windows** avec **pywin32** (installé
+> automatiquement par les scripts de build sous Windows). L'aperçu, lui, marche
+> partout. Réglez la **taille de l'étiquette** dans les préférences du pilote de
+> votre imprimante (étiquettes 40×20 mm / 80×20 mm).
+
 ## ⚠️ À propos de la modification d'une référence (`REF_ART`)
 
 `REF_ART` est la clé de l'article et peut être référencée par les lignes de
@@ -170,8 +201,9 @@ Faites une **sauvegarde** (`gbak`) avant une campagne de renommage.
 |---------|------|
 | `bulk_article_editor.py` | Interface graphique Tkinter (point d'entrée). |
 | `article_db.py` | Accès Firebird (`fdb`) : connexion, introspection, lecture, écriture transactionnelle, familles, tarifs, codes équivalents. Inclut un dépôt de démo en mémoire. |
-| `editor_logic.py` | Logique pure (prix, arrondis, HT⇄TTC, chercher-remplacer, validation longueur, détection des colonnes, découpage des codes). Sans base ni interface. |
-| `test_editor_logic.py` | Tests unitaires (16) de la logique et du dépôt de démo. |
+| `editor_logic.py` | Logique pure (prix, arrondis, HT⇄TTC, chercher-remplacer, validation longueur, détection des colonnes, découpage des codes, dates/booléens). Sans base ni interface. |
+| `label_print.py` | Étiquettes : encodage code-barres Code 128 (Python pur), mise en page partagée (aperçu Tk + impression), impression directe Windows (pywin32). |
+| `test_editor_logic.py` | Tests unitaires (22) de la logique, du code-barres, de la mise en page des étiquettes et du dépôt de démo. |
 | `config.example.json` | Modèle de configuration de connexion. |
 | `requirements.txt` | Dépendances (`fdb`, `openpyxl`). |
 

@@ -48,10 +48,11 @@ import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
-from editor_logic import (Cols, PriceOp, TextOp, fmt_price, parse_number,
-                          encoded_len, split_codes, join_codes)
+from editor_logic import (Cols, PriceOp, TextOp, fmt_price, fmt_date, parse_number,
+                          parse_bool, encoded_len, split_codes, join_codes)
 import article_db
 from article_db import ArticleRepository, DemoRepository, DBError, load_config, save_config
+import label_print
 
 
 APP_TITLE = "PRIME — Editeur en masse des articles"
@@ -340,6 +341,7 @@ class BulkEditorApp(ttk.Frame):
 
         ttk.Separator(bar, orient="vertical").pack(side="left", fill="y", padx=8)
         ttk.Button(bar, text="Changer de base…", command=self.change_database).pack(side="left", padx=2)
+        ttk.Button(bar, text="Imprimer etiquettes...", command=self.print_labels).pack(side="left", padx=2)
         ttk.Button(bar, text="Importer Excel/CSV...", command=self.import_file).pack(side="left", padx=2)
         ttk.Button(bar, text="Exporter CSV...", command=self.export_csv).pack(side="left", padx=2)
 
@@ -355,7 +357,8 @@ class BulkEditorApp(ttk.Frame):
         self.tree = ttk.Treeview(wrap, columns=self.columns, show="headings",
                                  selectmode="extended")
         widths = {Cols.REF: 90, Cols.DESIGNATION: 230, Cols.CODES_EQUIV: 180,
-                  Cols.PV_HT: 90, Cols.PV_TTC: 90,
+                  Cols.PV_HT: 90, Cols.PV_TTC: 90, Cols.PV_TTC_PROMO: 90,
+                  Cols.PROMO_ACTIVE: 60,
                   Cols.TVA: 60, Cols.PA_HT: 90, Cols.QTE_CARTON: 80,
                   Cols.FAMILLE: 110}
         for c in self.columns:
@@ -431,6 +434,33 @@ class BulkEditorApp(ttk.Frame):
                 row=7, column=1, sticky="w")
             ttk.Button(price, text="Fixer qte/carton", command=self.apply_qte_carton).grid(
                 row=7, column=2, columnspan=2, sticky="e")
+
+        # --- Prix promo ---
+        if self.repo.has(Cols.PV_TTC_PROMO):
+            ttk.Separator(price, orient="horizontal").grid(
+                row=8, column=0, columnspan=4, sticky="ew", pady=6)
+            ttk.Label(price, text="PRIX PROMO", font=("", 9, "bold")).grid(
+                row=9, column=0, columnspan=4, sticky="w")
+            ttk.Label(price, text="(active la promo ; HT et TTC = meme prix)",
+                      foreground="#888").grid(row=10, column=0, columnspan=4, sticky="w")
+            ttk.Label(price, text="Prix promo").grid(row=11, column=0, sticky="e", pady=(4, 0))
+            self.promo_value = tk.StringVar()
+            ttk.Entry(price, textvariable=self.promo_value, width=8).grid(
+                row=11, column=1, sticky="w", pady=(4, 0))
+            ttk.Button(price, text="Fixer promo", command=self.apply_promo).grid(
+                row=11, column=2, columnspan=2, sticky="e", pady=(4, 0))
+            self.promo_start = tk.StringVar()
+            self.promo_end = tk.StringVar()
+            if self.repo.has(Cols.PROMO_START) or self.repo.has(Cols.PROMO_END):
+                dates = ttk.Frame(price)
+                dates.grid(row=12, column=0, columnspan=4, sticky="w", pady=(2, 0))
+                ttk.Label(dates, text="du").pack(side="left")
+                ttk.Entry(dates, textvariable=self.promo_start, width=10).pack(side="left", padx=2)
+                ttk.Label(dates, text="au").pack(side="left")
+                ttk.Entry(dates, textvariable=self.promo_end, width=10).pack(side="left", padx=2)
+                ttk.Label(dates, text="(JJ/MM/AAAA)", foreground="#888").pack(side="left")
+            ttk.Button(price, text="Desactiver promo", command=self.disable_promo).grid(
+                row=13, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
         ttk.Separator(panel, orient="vertical").grid(row=0, column=1, sticky="ns", padx=8)
 
@@ -601,9 +631,13 @@ class BulkEditorApp(ttk.Frame):
                 vals.append(fmt_price(v) if v is not None else "")
             elif c == Cols.CODES_EQUIV:
                 vals.append(join_codes(self._codes_for(ref0)))
+            elif c in Cols.BOOL_FIELDS:
+                vals.append("Oui" if parse_bool(rec.get(c)) else "")
+            elif c in Cols.NUMERIC:
+                vals.append(fmt_price(rec.get(c)))
             else:
                 v = rec.get(c)
-                vals.append(fmt_price(v) if c in Cols.NUMERIC else ("" if v is None else str(v)))
+                vals.append("" if v is None else str(v))
         return vals
 
     def _insert_row(self, rec):
@@ -694,8 +728,14 @@ class BulkEditorApp(ttk.Frame):
             return
         x, y, w, h = self.tree.bbox(iid, col_id)
         old = rec.get(logical)
+        if logical in Cols.BOOL_FIELDS:
+            prefill = "Oui" if parse_bool(old) else "Non"
+        elif logical in Cols.NUMERIC:
+            prefill = "" if old is None else fmt_price(old)
+        else:
+            prefill = "" if old is None else str(old)
         edit = tk.Entry(self.tree)
-        edit.insert(0, "" if old is None else (fmt_price(old) if logical in Cols.NUMERIC else str(old)))
+        edit.insert(0, prefill)
         edit.select_range(0, "end")
         edit.focus_set()
         edit.place(x=x, y=y, width=w, height=h)
@@ -714,7 +754,13 @@ class BulkEditorApp(ttk.Frame):
 
     def _set_cell(self, iid, rec, logical, new_value):
         """Valide et applique une nouvelle valeur de cellule (en attente)."""
-        if logical in Cols.NUMERIC:
+        if logical in Cols.BOOL_FIELDS:
+            b = parse_bool(new_value)
+            if new_value.strip() != "" and b is None:
+                messagebox.showwarning(APP_TITLE, "Repondez par Oui ou Non.")
+                return
+            value = b if b is not None else 0
+        elif logical in Cols.NUMERIC:
             num = parse_number(new_value)
             if new_value.strip() != "" and num is None:
                 messagebox.showwarning(APP_TITLE, "Valeur numerique invalide : %r" % new_value)
@@ -723,6 +769,8 @@ class BulkEditorApp(ttk.Frame):
             # le prix de vente HT et TTC restent identiques (pas la TVA)
             if logical in Cols.PRICE_FIELDS:
                 self._sync_price(rec, logical, value)
+            elif logical in Cols.PROMO_PRICE_FIELDS:
+                self._sync_promo(rec, logical, value)
         else:
             value = new_value.strip() or None
             real = self.repo.real(logical)
@@ -811,6 +859,18 @@ class BulkEditorApp(ttk.Frame):
             if other != logical and self.repo.has(other):
                 rec[other] = value
                 self._stage(rec, other, value)
+
+    def _sync_promo(self, rec, logical, value):
+        """Maintient PRIXHTPROMO et PRIXTTCPROMO identiques et active/desactive
+        automatiquement la promo (ACTIVEPROMO) selon qu'un prix est saisi."""
+        for other in Cols.PROMO_PRICE_FIELDS:
+            if other != logical and self.repo.has(other):
+                rec[other] = value
+                self._stage(rec, other, value)
+        if self.repo.has(Cols.PROMO_ACTIVE):
+            active = 1 if value not in (None, "") else 0
+            rec[Cols.PROMO_ACTIVE] = active
+            self._stage(rec, Cols.PROMO_ACTIVE, active)
 
     _ref_warned = False
 
@@ -965,6 +1025,50 @@ class BulkEditorApp(ttk.Frame):
         self._refresh_all_selected(recs)
         self.status.set("Qte/carton %s appliquee a %d article(s)."
                         % (fmt_price(qte), len(recs)))
+
+    def apply_promo(self):
+        recs = self._selected_recs()
+        if not recs:
+            return
+        val = parse_number(self.promo_value.get())
+        if val is None:
+            messagebox.showwarning(APP_TITLE, "Indiquez un prix promo (ex : 6,90).")
+            return
+        # dates optionnelles
+        from editor_logic import parse_date
+        start = end = None
+        try:
+            if getattr(self, "promo_start", None) is not None:
+                start = self.promo_start.get().strip()
+                parse_date(start)          # validation (leve si invalide)
+            if getattr(self, "promo_end", None) is not None:
+                end = self.promo_end.get().strip()
+                parse_date(end)
+        except ValueError as exc:
+            messagebox.showwarning(APP_TITLE, str(exc))
+            return
+        for rec in recs:
+            rec[Cols.PV_TTC_PROMO] = val
+            self._stage(rec, Cols.PV_TTC_PROMO, val)
+            self._sync_promo(rec, Cols.PV_TTC_PROMO, val)
+            if start and self.repo.has(Cols.PROMO_START):
+                self._stage(rec, Cols.PROMO_START, start)
+            if end and self.repo.has(Cols.PROMO_END):
+                self._stage(rec, Cols.PROMO_END, end)
+        self._refresh_all_selected(recs)
+        self.status.set("Prix promo %s applique (promo activee) a %d article(s)."
+                        % (fmt_price(val), len(recs)))
+
+    def disable_promo(self):
+        recs = self._selected_recs()
+        if not recs:
+            return
+        for rec in recs:
+            if self.repo.has(Cols.PROMO_ACTIVE):
+                rec[Cols.PROMO_ACTIVE] = 0
+                self._stage(rec, Cols.PROMO_ACTIVE, 0)
+        self._refresh_all_selected(recs)
+        self.status.set("Promo desactivee pour %d article(s)." % len(recs))
 
     # -- codes equivalents (en masse) --------------------------------------
     def _add_equiv_codes(self, rec, codes):
@@ -1218,6 +1322,38 @@ class BulkEditorApp(ttk.Frame):
                 label = base
             self.tree.heading(c, text=label)
 
+    # -- impression d'etiquettes -----------------------------------------
+    def _label_items(self, recs):
+        """Construit les etiquettes (label_print.LabelItem) des articles."""
+        items = []
+        for rec in recs:
+            ref0 = rec.get("__ref0__")
+            codes = self._codes_for(ref0)
+            barcode = codes[0] if codes else (rec.get(Cols.REF) or "")
+            price = parse_number(rec.get(Cols.PV_TTC))
+            if price is None:
+                price = parse_number(rec.get(Cols.PV_HT))
+            promo = None
+            if parse_bool(rec.get(Cols.PROMO_ACTIVE)):
+                promo = parse_number(rec.get(Cols.PV_TTC_PROMO))
+            items.append(label_print.LabelItem(
+                designation=rec.get(Cols.DESIGNATION) or "",
+                reference=rec.get(Cols.REF) or "",
+                barcode=str(barcode),
+                price=price, promo=promo))
+        return items
+
+    def print_labels(self):
+        recs = self._selected_recs()
+        if not recs:
+            return
+        items = self._label_items(recs)
+        dlg = LabelPrintDialog(self.master, items)
+        self.master.wait_window(dlg)
+        if dlg.printed:
+            self.status.set("%d etiquette(s) envoyee(s) a l'impression."
+                            % dlg.printed)
+
     # -- import / export --------------------------------------------------
     def export_csv(self):
         path = filedialog.asksaveasfilename(
@@ -1319,6 +1455,124 @@ class BulkEditorApp(ttk.Frame):
 # --------------------------------------------------------------------------- #
 #  Dialogue de correspondance des colonnes pour l'import
 # --------------------------------------------------------------------------- #
+class LabelPrintDialog(tk.Toplevel):
+    """Choix du modele d'etiquette, de l'imprimante et du nombre de copies,
+    avec APERCU a l'ecran, puis impression directe."""
+
+    def __init__(self, master, items):
+        super().__init__(master)
+        self.title("Imprimer des etiquettes")
+        self.resizable(False, False)
+        self.items = items
+        self.printed = 0
+
+        frm = ttk.Frame(self, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="%d article(s) selectionne(s)" % len(items),
+                  font=("", 10, "bold")).grid(row=0, column=0, columnspan=2,
+                                              sticky="w", pady=(0, 8))
+
+        # modele
+        ttk.Label(frm, text="Modele :").grid(row=1, column=0, sticky="w")
+        self.models = label_print.LABEL_MODELS
+        self.model_combo = ttk.Combobox(frm, state="readonly", width=48,
+                                        values=[m.name for m in self.models])
+        self.model_combo.current(0)
+        self.model_combo.grid(row=1, column=1, sticky="w", pady=2)
+        self.model_combo.bind("<<ComboboxSelected>>", lambda e: self._draw_preview())
+
+        # imprimante
+        ttk.Label(frm, text="Imprimante :").grid(row=2, column=0, sticky="w")
+        printers = label_print.list_printers()
+        default = label_print.default_printer()
+        if default and default not in printers:
+            printers.insert(0, default)
+        self.printer_combo = ttk.Combobox(frm, state="readonly", width=48,
+                                          values=printers or ["(aucune imprimante detectee)"])
+        if printers:
+            self.printer_combo.current(printers.index(default) if default in printers else 0)
+        else:
+            self.printer_combo.current(0)
+        self.printer_combo.grid(row=2, column=1, sticky="w", pady=2)
+
+        # copies
+        ttk.Label(frm, text="Copies / article :").grid(row=3, column=0, sticky="w")
+        self.copies = tk.StringVar(value="1")
+        ttk.Spinbox(frm, from_=1, to=999, textvariable=self.copies, width=6).grid(
+            row=3, column=1, sticky="w", pady=2)
+
+        # apercu
+        ttk.Label(frm, text="Apercu (1er article) :").grid(
+            row=4, column=0, columnspan=2, sticky="w", pady=(8, 2))
+        self.canvas = tk.Canvas(frm, width=340, height=180, bg="white",
+                                highlightthickness=1, highlightbackground="#bbb")
+        self.canvas.grid(row=5, column=0, columnspan=2)
+
+        if not label_print.printing_available():
+            ttk.Label(frm, foreground="#a11", wraplength=360, justify="left",
+                      text="Impression directe indisponible sur ce poste "
+                      "(necessite Windows + pywin32). L'apercu reste "
+                      "disponible.").grid(row=6, column=0, columnspan=2,
+                                          sticky="w", pady=(6, 0))
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=7, column=0, columnspan=2, sticky="e", pady=(10, 0))
+        ttk.Button(btns, text="Imprimer", command=self._print).pack(side="left", padx=4)
+        ttk.Button(btns, text="Fermer", command=self.destroy).pack(side="left")
+
+        self.transient(master)
+        self.grab_set()
+        self._draw_preview()
+
+    def _current_model(self):
+        return self.models[self.model_combo.current()]
+
+    def _draw_preview(self):
+        self.canvas.delete("all")
+        model = self._current_model()
+        item = self.items[0] if self.items else label_print.LabelItem(
+            designation="Exemple", barcode="123456789", price=9.9)
+        # echelle : faire tenir l'etiquette dans le canvas avec une marge
+        cw, ch = 340, 180
+        margin = 12
+        scale = min((cw - 2 * margin) / model.width_mm,
+                    (ch - 2 * margin) / model.height_mm)
+        lw, lh = model.width_mm * scale, model.height_mm * scale
+        ox, oy = (cw - lw) / 2, (ch - lh) / 2
+        # cadre de l'etiquette
+        self.canvas.create_rectangle(ox, oy, ox + lw, oy + lh,
+                                     outline="#888", dash=(3, 2))
+        r = label_print.TkCanvasRenderer(self.canvas, scale, ox=ox, oy=oy)
+        try:
+            label_print.layout_label(model, item, r)
+        except Exception:                              # noqa: BLE001
+            pass
+
+    def _print(self):
+        if not label_print.printing_available():
+            messagebox.showerror(
+                APP_TITLE, "Impression directe indisponible : ce poste doit "
+                "etre sous Windows avec pywin32 (py -m pip install pywin32).",
+                parent=self)
+            return
+        printer = self.printer_combo.get()
+        if not printer or printer.startswith("("):
+            messagebox.showwarning(APP_TITLE, "Choisissez une imprimante.", parent=self)
+            return
+        copies = parse_number(self.copies.get(), 1) or 1
+        model = self._current_model()
+        try:
+            label_print.print_labels(printer, model, self.items, int(copies))
+        except Exception as exc:                       # noqa: BLE001
+            messagebox.showerror(APP_TITLE, "Echec d'impression :\n%s" % exc, parent=self)
+            return
+        self.printed = len(self.items) * int(copies)
+        messagebox.showinfo(APP_TITLE, "%d etiquette(s) envoyee(s) a « %s »."
+                            % (self.printed, printer), parent=self)
+        self.destroy()
+
+
 class ImportMappingDialog(tk.Toplevel):
     def __init__(self, master, columns):
         super().__init__(master)

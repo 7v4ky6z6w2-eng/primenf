@@ -1,4 +1,7 @@
 # Editeur en masse des articles PRIME (Firebird) — dependances
 fdb>=2.0          # pilote Firebird (le meme que votre script d'import)
 openpyxl>=3.0     # lecture/ecriture des fichiers Excel (.xlsx)
+# Impression directe des etiquettes (choix imprimante + copies) : Windows only.
+pywin32>=306; platform_system == "Windows"
 # Tkinter est livre avec Python (paquet "python3-tk" sous Linux).
+# Le code-barres (Code 128) est genere en Python pur : aucune dependance.

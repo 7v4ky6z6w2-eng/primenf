@@ -45,7 +45,9 @@ Write-Host "== Installation/maj des dependances (PyInstaller a jour pour 3.14) =
 & $exe @pre -m pip install --upgrade -r requirements.txt -r requirements-build.txt
 
 Write-Host "== Construction de l'executable ==" -ForegroundColor Cyan
-& $exe @pre -m PyInstaller --noconfirm --clean --onefile --windowed --name BulkArticleEditor bulk_article_editor.py
+& $exe @pre -m PyInstaller --noconfirm --clean --onefile --windowed --name BulkArticleEditor `
+    --hidden-import win32ui --hidden-import win32print --hidden-import win32con `
+    bulk_article_editor.py
 
 Write-Host ""
 Write-Host "Termine. L'executable est dans : $PSScriptRoot\dist\BulkArticleEditor.exe" -ForegroundColor Green

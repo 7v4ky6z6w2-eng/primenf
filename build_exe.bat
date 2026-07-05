@@ -39,7 +39,9 @@ if errorlevel 1 (
 )
 
 echo == Construction de l'executable ==
-%PYCMD% -m PyInstaller --noconfirm --clean --onefile --windowed --name BulkArticleEditor bulk_article_editor.py
+%PYCMD% -m PyInstaller --noconfirm --clean --onefile --windowed --name BulkArticleEditor ^
+    --hidden-import win32ui --hidden-import win32print --hidden-import win32con ^
+    bulk_article_editor.py
 if errorlevel 1 (
     echo.
     echo [ERREUR] La construction a echoue.

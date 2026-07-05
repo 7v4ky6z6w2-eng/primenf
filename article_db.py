@@ -285,7 +285,10 @@ class ArticleRepository:
         (valeur d'origine de la reference, qui sert de cle de mise a jour).
         """
         cols = self.display_columns()
-        reals = [self.real(c) for c in cols]
+        extra = [c for c in Cols.EXTRA_LOAD
+                 if c in self.colmap and c not in cols]
+        all_cols = cols + extra
+        reals = [self.real(c) for c in all_cols]
         select = ", ".join(reals)
         sql = f"SELECT {select} FROM {self.table}"
         params = []
@@ -314,7 +317,7 @@ class ArticleRepository:
         out = []
         for row in rows:
             rec = {}
-            for logical, value in zip(cols, row):
+            for logical, value in zip(all_cols, row):
                 rec[logical] = value
             rec["__ref0__"] = rec.get(Cols.REF)
             out.append(rec)
@@ -342,7 +345,7 @@ class ArticleRepository:
         Leve DBError en cas d'echec (et laisse la transaction telle quelle pour
         un rollback par l'appelant).
         """
-        from editor_logic import parse_number, fit_text
+        from editor_logic import parse_number, fit_text, parse_bool, parse_date
 
         cur = self.con.cursor()
         # 1) creer les familles manquantes (avant les articles -> FK satisfaite)
@@ -364,7 +367,16 @@ class ArticleRepository:
                 real = self.real(logical)
                 if real is None:
                     continue
-                if logical in Cols.NUMERIC:
+                if logical in Cols.INT_FIELDS:
+                    b = parse_bool(val) if logical in Cols.BOOL_FIELDS else None
+                    if b is not None:
+                        params.append(b)
+                    else:
+                        num = parse_number(val)
+                        params.append(int(num) if num is not None else None)
+                elif logical in Cols.DATE_FIELDS:
+                    params.append(parse_date(val))
+                elif logical in Cols.NUMERIC:
                     params.append(parse_number(val))
                 else:
                     maxb = self.maxlen.get(real, Cols.DEFAULT_MAX_LEN.get(logical, 255))
@@ -721,7 +733,11 @@ class DemoRepository:
         self.table = "ARTICLE (demo)"
         self.codec = "cp1252"
         self.columns = list(Cols.DISPLAY)
+        # colonnes "possedees" : celles affichees + les colonnes promo non
+        # affichees (HT promo, dates) pour coller au schema PRIME reel.
         self.colmap = {c: c for c in Cols.DISPLAY}
+        for c in (Cols.PV_HT_PROMO, Cols.PROMO_START, Cols.PROMO_END):
+            self.colmap[c] = c
         self.maxlen = {Cols.REF: 35, Cols.DESIGNATION: 100}
         self.famille_table = "FAMILLE (demo)"
         self.fam_code = Cols.FAMILLE_CODE
@@ -750,14 +766,16 @@ class DemoRepository:
         self._staged = None
 
     def _sample(self):
+        # colonnes : REF, DESIGNATION, PV_HT, PV_TTC, PV_TTC_PROMO,
+        #            PROMO_ACTIVE, TVA, PA_HT, QTE_CARTON, FAMILLE
         data = [
-            ("A001", "Cafe moulu 250g", 2.50, 2.98, 19, 1.40, 12, "BOISSON"),
-            ("A002", "The vert bio 100g", 3.10, 3.69, 19, 1.80, 12, "BOISSON"),
-            ("A003", "Sucre blanc 1kg", 1.05, 1.25, 19, 0.70, 10, "EPICERIE"),
-            ("A004", "Huile olive 1L", 7.90, 9.40, 19, 5.20, 6, "EPICERIE"),
-            ("A005", "Savon de Marseille", 1.80, 2.14, 19, 0.95, 24, "HYGIENE"),
-            ("B010", "Stylo bille bleu", 0.50, 0.60, 19, 0.20, 50, "PAPETERIE"),
-            ("B011", "Cahier 96 pages", 1.20, 1.43, 19, 0.65, 25, "PAPETERIE"),
+            ("A001", "Cafe moulu 250g", 2.50, 2.98, 2.50, 1, 19, 1.40, 12, "BOISSON"),
+            ("A002", "The vert bio 100g", 3.10, 3.69, None, 0, 19, 1.80, 12, "BOISSON"),
+            ("A003", "Sucre blanc 1kg", 1.05, 1.25, None, 0, 19, 0.70, 10, "EPICERIE"),
+            ("A004", "Huile olive 1L", 7.90, 9.40, 6.90, 1, 19, 5.20, 6, "EPICERIE"),
+            ("A005", "Savon de Marseille", 1.80, 2.14, None, 0, 19, 0.95, 24, "HYGIENE"),
+            ("B010", "Stylo bille bleu", 0.50, 0.60, None, 0, 19, 0.20, 50, "PAPETERIE"),
+            ("B011", "Cahier 96 pages", 1.20, 1.43, None, 0, 19, 0.65, 25, "PAPETERIE"),
         ]
         rows = []
         for rec in data:
@@ -808,7 +826,7 @@ class DemoRepository:
         return code in self._familles
 
     def update_rows(self, changes, new_familles=None):
-        from editor_logic import parse_number
+        from editor_logic import parse_number, parse_bool, parse_date
         for code, intitule, _tva in (new_familles or []):
             if code and code not in self._familles:
                 self._familles[code] = intitule or code
@@ -819,7 +837,16 @@ class DemoRepository:
             if not row:
                 continue
             for logical, val in (change.get("values") or {}).items():
-                row[logical] = parse_number(val) if logical in Cols.NUMERIC else (val or None)
+                if logical in Cols.INT_FIELDS:
+                    b = parse_bool(val) if logical in Cols.BOOL_FIELDS else None
+                    row[logical] = b if b is not None else (
+                        int(parse_number(val)) if parse_number(val) is not None else None)
+                elif logical in Cols.DATE_FIELDS:
+                    row[logical] = parse_date(val)
+                elif logical in Cols.NUMERIC:
+                    row[logical] = parse_number(val)
+                else:
+                    row[logical] = val or None
             n += 1
         self._staged = list(staged.values())
         return n

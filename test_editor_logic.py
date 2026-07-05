@@ -4,9 +4,12 @@
 Lancer :  python -m pytest test_editor_logic.py   (ou python test_editor_logic.py)
 """
 
+import datetime
+
 from editor_logic import (parse_number, ht_to_ttc, ttc_to_ht, apply_rounding,
                           PriceOp, TextOp, fit_text, encoded_len, detect_columns,
-                          split_codes, join_codes, Cols)
+                          split_codes, join_codes, parse_bool, parse_date, Cols)
+import label_print
 
 
 # --- conversion de nombres ------------------------------------------------- #
@@ -107,6 +110,69 @@ def test_split_and_join_codes():
     assert split_codes(join_codes(["A", "B"])) == ["A", "B"]
 
 
+# --- booleens / dates ------------------------------------------------------ #
+def test_parse_bool():
+    assert parse_bool("oui") == 1
+    assert parse_bool("Non") == 0
+    assert parse_bool("1") == 1
+    assert parse_bool("0") == 0
+    assert parse_bool(True) == 1
+    assert parse_bool(2) == 1
+    assert parse_bool("") is None
+    assert parse_bool(None) is None
+
+
+def test_parse_date():
+    assert parse_date("25/12/2026") == datetime.datetime(2026, 12, 25)
+    assert parse_date("2026-12-25") == datetime.datetime(2026, 12, 25)
+    assert parse_date("") is None
+    assert parse_date(None) is None
+    try:
+        parse_date("pasunedate")
+        assert False, "devrait lever ValueError"
+    except ValueError:
+        pass
+
+
+# --- code-barres Code 128 -------------------------------------------------- #
+def test_code128_widths():
+    w = label_print.code128b_widths("ABC123")
+    assert all(isinstance(x, int) and x > 0 for x in w)
+    # commence et finit par une barre -> nombre impair de modules
+    assert len(w) % 2 == 1
+    # deterministe
+    assert label_print.code128b_widths("ABC123") == w
+    # contenu different -> encodage different
+    assert label_print.code128b_widths("ABC124") != w
+    # caracteres non imprimables ignores (ne plante pas)
+    assert label_print.code128b_widths("\x01\x02") == label_print.code128b_widths(" ")
+
+
+# --- mise en page des etiquettes ------------------------------------------- #
+def test_label_layout_barcode_model():
+    m = label_print.model_by_key("M1")
+    item = label_print.LabelItem(designation="Cafe 250g", barcode="123456",
+                                 price=9.9)
+    r = label_print.RecordingRenderer()
+    label_print.layout_label(m, item, r)
+    assert r.rects, "le modele M1 doit dessiner un code-barres"
+    # toutes les barres tiennent dans la largeur de l'etiquette
+    assert all(x + w <= m.width_mm + 0.01 for (x, y, w, h) in r.rects)
+    joined = " ".join(t["s"] for t in r.texts)
+    assert "9,90 DA" in joined and "Cafe" in joined
+
+
+def test_label_layout_discount_strikes_normal_price():
+    m = label_print.model_by_key("M3")
+    item = label_print.LabelItem(designation="Huile", price=9.4, promo=6.9)
+    r = label_print.RecordingRenderer()
+    label_print.layout_label(m, item, r)
+    assert not r.rects, "le modele M3 n'a pas de code-barres"
+    struck = [t for t in r.texts if t["strike"]]
+    assert struck and "9,40 DA" in struck[0]["s"]
+    assert any("6,90 DA" in t["s"] for t in r.texts)
+
+
 # --- auto-detection des colonnes ------------------------------------------ #
 def test_detect_columns_real_schema():
     real = ["REF_ART", "DESIGNATION", "CODE_BARRES", "CODE_BARRE",
@@ -181,6 +247,25 @@ def test_demo_repo_create_famille_and_assign():
     a003 = next(r for r in repo.load() if r[Cols.REF] == "A003")
     assert a003[Cols.FAMILLE] == "SURGELE"
     assert ("SURGELE", "Surgeles") in repo.list_familles()
+
+
+def test_demo_repo_promo_price():
+    from article_db import DemoRepository
+    repo = DemoRepository().connect()
+    # A002 n'a pas de promo au depart
+    a002 = next(r for r in repo.load() if r[Cols.REF] == "A002")
+    assert not a002.get(Cols.PROMO_ACTIVE)
+    repo.update_rows([{"ref0": "A002", "values": {
+        Cols.PV_HT_PROMO: 2.5, Cols.PV_TTC_PROMO: 2.5, Cols.PROMO_ACTIVE: 1}}])
+    repo.commit()
+    a002 = next(r for r in repo.load() if r[Cols.REF] == "A002")
+    assert a002[Cols.PV_TTC_PROMO] == 2.5
+    assert a002[Cols.PROMO_ACTIVE] == 1
+    # desactivation
+    repo.update_rows([{"ref0": "A002", "values": {Cols.PROMO_ACTIVE: 0}}])
+    repo.commit()
+    a002 = next(r for r in repo.load() if r[Cols.REF] == "A002")
+    assert a002[Cols.PROMO_ACTIVE] == 0
 
 
 def test_demo_repo_rename_reference():

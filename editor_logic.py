@@ -43,21 +43,48 @@ class Cols:
     FAMILLE = "CODEFAMILLE"
     QTE_CARTON = "QTEPCARTON"   # quantite par carton (numerique)
 
+    #: Prix promotionnel (base PRIME). Comme le prix de vente, HT et TTC
+    #: contiennent la MEME valeur. ACTIVEPROMO (0/1) active/desactive la promo,
+    #: DATEDEBPROMO / DATEFINPROMO en bornent la periode.
+    PV_HT_PROMO = "PRIXHTPROMO"
+    PV_TTC_PROMO = "PRIXTTCPROMO"
+    PROMO_ACTIVE = "ACTIVEPROMO"
+    PROMO_START = "DATEDEBPROMO"
+    PROMO_END = "DATEFINPROMO"
+
     #: Colonne VIRTUELLE : codes equivalents (table EQUIV_CBARRES, 0..n codes
     #: par article). Remplace les anciennes colonnes CODE_BARRES / CODE_BARRE.
     CODES_EQUIV = "__codes_equiv__"
 
     #: Colonnes affichees dans la grille, dans l'ordre. (CODES_EQUIV est
     #: inseree dynamiquement par l'interface si la table existe.)
-    DISPLAY = [REF, DESIGNATION, PV_HT, PV_TTC, TVA, PA_HT, QTE_CARTON, FAMILLE]
+    DISPLAY = [REF, DESIGNATION, PV_HT, PV_TTC, PV_TTC_PROMO, PROMO_ACTIVE,
+               TVA, PA_HT, QTE_CARTON, FAMILLE]
+
+    #: Colonnes chargees en plus de DISPLAY (utiles au traitement mais pas
+    #: montrees telles quelles dans la grille — ex: dates de promo).
+    EXTRA_LOAD = [PROMO_START, PROMO_END]
 
     #: Colonnes que l'utilisateur peut modifier dans l'editeur.
     #: (FAMILLE = CODEFAMILLE : affectation/creation geree avec garde-fou FK)
-    EDITABLE = {REF, PV_HT, PV_TTC, TVA, FAMILLE, QTE_CARTON}
+    EDITABLE = {REF, PV_HT, PV_TTC, PV_TTC_PROMO, PROMO_ACTIVE,
+                TVA, FAMILLE, QTE_CARTON}
 
     #: Champs "prix de vente" qui doivent rester IDENTIQUES entre eux dans la
     #: base PRIME (HT et TTC contiennent le meme prix de vente saisi).
     PRICE_FIELDS = [PV_HT, PV_TTC]
+
+    #: Idem pour le prix promo (HT et TTC = meme valeur).
+    PROMO_PRICE_FIELDS = [PV_HT_PROMO, PV_TTC_PROMO]
+
+    #: Champs entiers (0/1 ou compteurs) — convertis en int a l'ecriture.
+    INT_FIELDS = {PROMO_ACTIVE}
+
+    #: Champs booleens affiches "Oui"/"" et saisis oui/non/1/0.
+    BOOL_FIELDS = {PROMO_ACTIVE}
+
+    #: Champs date/heure (converties depuis "JJ/MM/AAAA" ou "AAAA-MM-JJ").
+    DATE_FIELDS = {PROMO_START, PROMO_END}
 
     #: Table et colonnes du referentiel des familles (base PRIME).
     FAMILLE_TABLE = "FAMILLE"
@@ -76,7 +103,8 @@ class Cols:
     EQUIV_CODE_LEN = 60
 
     #: Colonnes numeriques (prix / taux / quantites).
-    NUMERIC = {PV_HT, PV_TTC, PA_HT, PA_TTC, TVA, QTE_CARTON}
+    NUMERIC = {PV_HT, PV_TTC, PV_HT_PROMO, PV_TTC_PROMO, PA_HT, PA_TTC,
+               TVA, QTE_CARTON}
 
     #: Longueur maximale (en octets) des champs texte modifiables. Sert de
     #: garde-fou tant que la base n'a pas confirme la vraie taille via les
@@ -93,6 +121,10 @@ class Cols:
         CODES_EQUIV: "Codes equiv.",
         PV_HT: "Prix vente HT",
         PV_TTC: "Prix vente TTC",
+        PV_TTC_PROMO: "Prix promo",
+        PROMO_ACTIVE: "Promo ?",
+        PROMO_START: "Debut promo",
+        PROMO_END: "Fin promo",
         TVA: "TVA %",
         PA_HT: "Prix achat HT",
         QTE_CARTON: "Qte/carton",
@@ -142,6 +174,67 @@ def parse_number(value, default=None):
         return float(txt)
     except ValueError:
         return default
+
+
+def parse_bool(value, default=None):
+    """Interprete une saisie oui/non en 0/1. Renvoie ``default`` si vide.
+
+    >>> parse_bool("oui")
+    1
+    >>> parse_bool("Non")
+    0
+    >>> parse_bool("1")
+    1
+    >>> parse_bool("")
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (int, float)):
+        return 1 if value else 0
+    txt = str(value).strip().lower()
+    if txt == "":
+        return default
+    if txt in ("1", "oui", "o", "yes", "y", "true", "vrai", "x", "actif", "on"):
+        return 1
+    if txt in ("0", "non", "n", "no", "false", "faux", "inactif", "off"):
+        return 0
+    return default
+
+
+def parse_date(value):
+    """Convertit 'JJ/MM/AAAA' ou 'AAAA-MM-JJ' en datetime (minuit).
+
+    Renvoie None si vide, ou leve ValueError si le format est invalide.
+    Accepte aussi un objet date/datetime tel quel.
+    """
+    import datetime as _dt
+    if value is None:
+        return None
+    if isinstance(value, (_dt.datetime,)):
+        return value
+    if isinstance(value, _dt.date):
+        return _dt.datetime(value.year, value.month, value.day)
+    txt = str(value).strip()
+    if txt == "":
+        return None
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y", "%d/%m/%y"):
+        try:
+            return _dt.datetime.strptime(txt, fmt)
+        except ValueError:
+            continue
+    raise ValueError("Date invalide : %r (attendu JJ/MM/AAAA)" % value)
+
+
+def fmt_date(value) -> str:
+    """Formate une date/heure en 'JJ/MM/AAAA' ('' si None)."""
+    import datetime as _dt
+    if value in (None, ""):
+        return ""
+    if isinstance(value, (_dt.date, _dt.datetime)):
+        return value.strftime("%d/%m/%Y")
+    return str(value)
 
 
 def fmt_price(value) -> str:
@@ -371,6 +464,12 @@ COLUMN_ALIASES = {
     Cols.DESIGNATION: ["designation", "libelle", "intitule", "designation_1"],
     Cols.PV_HT: ["prixventeht", "pv_ht", "prix_vente_ht", "pvht"],
     Cols.PV_TTC: ["prixventettc", "pv_ttc", "prix_vente_ttc", "pvttc"],
+    Cols.PV_HT_PROMO: ["prixhtpromo", "prix_ht_promo", "promo_ht"],
+    Cols.PV_TTC_PROMO: ["prixttcpromo", "prix_ttc_promo", "promo_ttc",
+                        "prix_promo"],
+    Cols.PROMO_ACTIVE: ["activepromo", "promo_active", "active_promo"],
+    Cols.PROMO_START: ["datedebpromo", "date_deb_promo", "debut_promo"],
+    Cols.PROMO_END: ["datefinpromo", "date_fin_promo", "fin_promo"],
     Cols.PA_HT: ["prixachatht", "pa_ht", "prix_achat_ht", "paht"],
     Cols.PA_TTC: ["prixachatttc", "pa_ttc", "prix_achat_ttc"],
     Cols.TVA: ["taux_tva", "tva", "taux_de_tva", "txtva"],
