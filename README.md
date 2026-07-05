@@ -177,15 +177,20 @@ Sélectionnez des articles, puis **Imprimer étiquettes…** :
 3. Un **aperçu** à l'écran montre l'étiquette du 1ᵉʳ article ; cliquez
    **Imprimer** pour envoyer directement à l'imprimante (aucun fichier PDF/HTML).
 
-Le **code-barres** est un **Code 128** généré en interne (Python pur), scannable
-par n'importe quelle douchette ; il encode le 1ᵉʳ code équivalent de l'article
-(ou, à défaut, sa référence). Le prix promo n'apparaît sur M3 que si la promo est
-**active**. Les prix sont affichés en dinars (`DA`).
+Le **code-barres** est un **Code 128 auto (jeux B/C)** généré en interne (Python
+pur), scannable par n'importe quelle douchette ; il encode le 1ᵉʳ code équivalent
+de l'article (ou, à défaut, sa référence). Les suites de chiffres (codes EAN)
+passent en jeu C : les barres sont ~2× plus larges, donc lisibles même sur une
+petite étiquette imprimée à 203 dpi. Le prix promo n'apparaît sur M3 que si la
+promo est **active**. Les prix sont affichés en dinars (`DA`).
 
 > L'impression directe nécessite **Windows** avec **pywin32** (installé
 > automatiquement par les scripts de build sous Windows). L'aperçu, lui, marche
-> partout. Réglez la **taille de l'étiquette** dans les préférences du pilote de
-> votre imprimante (étiquettes 40×20 mm / 80×20 mm).
+> partout. L'application **fixe automatiquement** la taille de l'étiquette
+> (40×20 mm / 80×20 mm) sur l'imprimante via le pilote — testé pour les
+> imprimantes thermiques type **Xprinter XP‑427D** (203 dpi, papier 20×40).
+> Si votre étiquette sort décalée ou tournée, réglez la taille du support
+> (« stock ») dans les préférences du pilote et signalez-le-moi.
 
 ## ⚠️ À propos de la modification d'une référence (`REF_ART`)
 

@@ -148,6 +148,19 @@ def test_code128_widths():
     assert label_print.code128b_widths("\x01\x02") == label_print.code128b_widths(" ")
 
 
+def test_code128_auto_is_compact_for_numbers():
+    ean = "3001234500017"
+    auto = label_print.code128_widths(ean)
+    pure_b = label_print.code128b_widths(ean)
+    # commence/finit par une barre
+    assert len(auto) % 2 == 1 and auto[0] > 0
+    # le jeu C rend un code numerique nettement plus court (barres plus larges)
+    assert sum(auto) < sum(pure_b) * 0.75
+    # deterministe ; du texte non numerique reste encode (jeu B)
+    assert label_print.code128_widths(ean) == auto
+    assert len(label_print.code128_widths("ABC")) % 2 == 1
+
+
 # --- mise en page des etiquettes ------------------------------------------- #
 def test_label_layout_barcode_model():
     m = label_print.model_by_key("M1")

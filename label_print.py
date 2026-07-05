@@ -52,10 +52,92 @@ _CODE128_PATTERNS = [
     "211232", "2331112",
 ]
 _START_B = 104
+_START_C = 105
+_SWITCH_B = 100          # bascule vers le jeu B depuis un autre jeu
+_SWITCH_C = 99           # bascule vers le jeu C (chiffres par paires)
 _STOP = 106
 
 
+def _widths_from_symbols(symbols):
+    """Ajoute la cle de controle + l'arret, puis convertit en largeurs."""
+    total = symbols[0]
+    for k, v in enumerate(symbols[1:], start=1):
+        total += k * v
+    full = symbols + [total % 103, _STOP]
+    widths = []
+    for s in full:
+        widths.extend(int(ch) for ch in _CODE128_PATTERNS[s])
+    return widths
+
+
 def code128b_widths(data):
+    """Encode ``data`` en Code 128B ; renvoie la liste des largeurs de modules.
+
+    La liste alterne barre/espace en commençant par une **barre** (indice pair
+    = barre noire, indice impair = espace blanc). Les caracteres hors ASCII
+    imprimable (32..126) sont ignores.
+
+    >>> w = code128b_widths("A")
+    >>> w[0] > 0 and len(w) % 2 == 1     # commence et finit par une barre
+    True
+    """
+    chars = [c for c in str(data) if 32 <= ord(c) <= 126]
+    if not chars:
+        chars = [" "]
+    values = [ord(c) - 32 for c in chars]
+    return _widths_from_symbols([_START_B] + values)
+
+
+def _leading_digits(s, i):
+    n = 0
+    while i + n < len(s) and s[i + n].isdigit():
+        n += 1
+    return n
+
+
+def code128_widths(data):
+    """Encode ``data`` en Code 128 **auto** (jeux B et C) ; renvoie les largeurs.
+
+    Les suites de chiffres sont encodees en jeu C (2 chiffres par symbole), ce
+    qui reduit de moitie la largeur des codes numeriques (ex EAN) : les barres
+    sont ~2x plus larges et donc bien plus lisibles sur une petite etiquette
+    imprimee a 203 dpi. Le reste est encode en jeu B.
+    """
+    s = "".join(c for c in str(data) if 32 <= ord(c) <= 126) or " "
+    symbols = []
+    i = 0
+    ld = _leading_digits(s, 0)
+    if ld >= 4 or (ld == len(s) and ld >= 2 and ld % 2 == 0):
+        mode = "C"
+        symbols.append(_START_C)
+    else:
+        mode = "B"
+        symbols.append(_START_B)
+    while i < len(s):
+        if mode == "C":
+            if i + 1 < len(s) and s[i].isdigit() and s[i + 1].isdigit():
+                symbols.append(int(s[i:i + 2]))
+                i += 2
+            else:
+                symbols.append(_SWITCH_B)
+                mode = "B"
+        else:
+            ld = _leading_digits(s, i)
+            if ld >= 4 or (ld == len(s) - i and ld >= 2 and ld % 2 == 0):
+                if ld % 2 == 1:                    # rendre la suite paire
+                    symbols.append(ord(s[i]) - 32)
+                    i += 1
+                symbols.append(_SWITCH_C)
+                mode = "C"
+            else:
+                symbols.append(ord(s[i]) - 32)
+                i += 1
+    return _widths_from_symbols(symbols)
+
+
+def code128b_module_count(data):
+    """Nombre total de modules (largeur en 'X') du code-barres, hors marges."""
+    return sum(code128b_widths(data))
     """Encode ``data`` en Code 128B ; renvoie la liste des largeurs de modules.
 
     La liste alterne barre/espace en commençant par une **barre** (indice pair
@@ -254,8 +336,8 @@ def _fit_text(r, x, y, text, h_mm, max_w, bold=False, anchor="n"):
 
 
 def _draw_barcode(r, data, x, y, w, h, quiet=10):
-    """Dessine un Code 128 dans le rectangle (x, y, w, h) en mm."""
-    widths = code128b_widths(data)
+    """Dessine un Code 128 (auto B/C) dans le rectangle (x, y, w, h) en mm."""
+    widths = code128_widths(data)
     total = sum(widths) + 2 * quiet
     module = w / float(total)          # largeur d'un module en mm
     cursor = x + quiet * module        # marge silencieuse a gauche
@@ -431,6 +513,49 @@ class _GdiRenderer(LabelRenderer):
         self.dc.FillSolidRect((left, top, right, bottom), 0)   # 0 = noir
 
 
+# Champs DEVMODE (constantes Windows, valeurs fixes).
+_DM_ORIENTATION = 0x1
+_DM_PAPERSIZE = 0x2
+_DM_PAPERLENGTH = 0x4
+_DM_PAPERWIDTH = 0x8
+_DMPAPER_USER = 256
+_DMORIENT_PORTRAIT = 1
+
+
+def _open_label_dc(printer_name, model):
+    """Ouvre un DC imprimante en fixant la taille exacte de l'etiquette.
+
+    Regle le format papier a ``model.width_mm`` x ``model.height_mm`` (en
+    dixiemes de mm) via le DEVMODE, pour que l'etiquette tombe juste sur une
+    imprimante thermique (ex Xprinter XP-427D, 203 dpi, papier 20x40). En cas
+    d'echec, on retombe sur le DEVMODE par defaut du pilote.
+    """
+    import win32ui
+    name = printer_name or default_printer()
+    try:
+        import win32print
+        import win32gui
+        h = win32print.OpenPrinter(name)
+        try:
+            dm = win32print.GetPrinter(h, 2)["pDevMode"]
+        finally:
+            win32print.ClosePrinter(h)
+        if dm is not None:
+            dm.PaperSize = _DMPAPER_USER
+            dm.PaperWidth = int(round(model.width_mm * 10))    # 0.1 mm
+            dm.PaperLength = int(round(model.height_mm * 10))
+            dm.Orientation = _DMORIENT_PORTRAIT
+            dm.Fields |= (_DM_PAPERSIZE | _DM_PAPERWIDTH |
+                          _DM_PAPERLENGTH | _DM_ORIENTATION)
+            hdc = win32gui.CreateDC("WINSPOOL", name, dm)
+            return win32ui.CreateDCFromHandle(hdc)
+    except Exception:      # noqa: BLE001
+        pass               # repli : format papier configure dans le pilote
+    dc = win32ui.CreateDC()
+    dc.CreatePrinterDC(name)
+    return dc
+
+
 def print_labels(printer_name, model, items, copies=1):
     """Imprime les etiquettes directement sur ``printer_name``.
 
@@ -442,14 +567,11 @@ def print_labels(printer_name, model, items, copies=1):
         raise RuntimeError(
             "L'impression directe necessite Windows avec pywin32 installe "
             "(py -m pip install pywin32).")
-    import win32ui
     import win32con
 
     copies = max(1, int(copies))
-    dc = win32ui.CreateDC()
     try:
-        dc.CreatePrinterDC(printer_name) if printer_name else \
-            dc.CreatePrinterDC(default_printer())
+        dc = _open_label_dc(printer_name, model)
     except Exception as exc:      # noqa: BLE001
         raise RuntimeError("Imprimante inaccessible : %s" % exc) from exc
 
