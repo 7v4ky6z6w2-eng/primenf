@@ -14,7 +14,7 @@ demandé :
 | **Famille** | `CODEFAMILLE` — affectation **et création** d'une famille (code + nom) |
 
 **Impression d'étiquettes** (directe, sur l'imprimante de votre choix, sans PDF) —
-trois modèles : **M1** 40×20 mm (code-barres + désignation + prix), **M2** 80×20 mm
+trois modèles : **M1** 40×20 mm (haut : désignation + **prix en grand** ; bas : code-barres), **M2** 80×20 mm
 (désignation + prix), **M3** 40×20 mm (prix normal barré + prix promo, ticket de remise).
 
 Le schéma a été repris de votre script `import_bon_reception.py` ; l'application
@@ -170,7 +170,7 @@ Points importants :
 
 Sélectionnez des articles, puis **Imprimer étiquettes…** :
 
-1. Choisissez le **modèle** (M1 code-barres + désignation + prix ; M2 désignation
+1. Choisissez le **modèle** (M1 prix en grand + désignation en haut, code-barres en bas ; M2 désignation
    + prix ; M3 prix normal barré + prix promo).
 2. Choisissez l'**imprimante** (liste des imprimantes installées) et le **nombre
    de copies** par article.

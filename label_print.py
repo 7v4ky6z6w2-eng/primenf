@@ -95,18 +95,19 @@ class LabelModel:
     show_barcode: bool = False
     show_designation: bool = True
     price_mode: str = "normal"       # "normal" | "promo_discount"
+    max_designation_chars: int = 0   # 0 = pas de limite
 
 
 LABEL_MODELS = [
-    LabelModel("M1", "Modele 1 — Code-barres + designation + prix (40x20 mm)",
+    LabelModel("M1", "Modele 1 — Prix (grand) + designation + code-barres (40x20 mm)",
                40, 20, show_barcode=True, show_designation=True,
-               price_mode="normal"),
+               price_mode="normal", max_designation_chars=20),
     LabelModel("M2", "Modele 2 — Designation + prix (80x20 mm)",
                80, 20, show_barcode=False, show_designation=True,
-               price_mode="normal"),
+               price_mode="normal", max_designation_chars=40),
     LabelModel("M3", "Modele 3 — Prix + prix promo / remise (40x20 mm)",
                40, 20, show_barcode=False, show_designation=True,
-               price_mode="promo_discount"),
+               price_mode="promo_discount", max_designation_chars=22),
 ]
 
 
@@ -169,32 +170,34 @@ def layout_label(model, item, r):
     W, H = model.width_mm, model.height_mm
     pad = 1.2
     cx = W / 2.0
+    desig = _cap(item.designation, model.max_designation_chars)
 
     if model.price_mode == "promo_discount":
-        _layout_discount(model, item, r, W, H, pad, cx)
+        _layout_discount(model, item, r, W, H, pad, cx, desig)
         return
 
     if model.show_barcode:
-        # ligne haute : designation a gauche, prix a droite (evite le
-        # chevauchement sur une petite etiquette 40 mm)
-        top_h = 3.0
+        # moitie HAUTE : designation (petit) puis PRIX en grand ;
+        # moitie BASSE : code-barres + numero.
+        half = H / 2.0
+        y = pad
+        if model.show_designation and desig:
+            _fit_text(r, cx, y, desig, 2.6, W - 2 * pad, anchor="n")
+            y += 2.9
         ptxt = item.price_text(item.price)
-        pw = r.measure(ptxt, top_h, bold=True)[0] if ptxt else 0.0
         if ptxt:
-            r.text(W - pad, pad, ptxt, top_h, bold=True, anchor="ne")
-        if model.show_designation and item.designation:
-            _fit_text(r, pad, pad, item.designation, top_h,
-                      W - 2 * pad - pw - 1.0, bold=True, anchor="nw")
-        y = pad + top_h + 0.5
-        bc_h = max(6.0, H - y - 3.0)
-        _draw_barcode(r, item.barcode, pad, y, W - 2 * pad, bc_h)
-        y += bc_h + 0.2
-        _fit_text(r, cx, y, item.barcode, 2.0, W - 2 * pad, anchor="n")
+            ph = min(6.5, max(3.0, half - y))
+            _fit_text(r, cx, (y + half) / 2.0, ptxt, ph, W - 2 * pad,
+                      bold=True, anchor="center")
+        by = half + 0.2
+        bc_h = max(5.0, H - by - 2.6)
+        _draw_barcode(r, item.barcode, pad, by, W - 2 * pad, bc_h)
+        _fit_text(r, cx, by + bc_h + 0.1, item.barcode, 2.0, W - 2 * pad,
+                  anchor="n")
     else:
         y = pad
-        if model.show_designation and item.designation:
-            _fit_text(r, cx, y, item.designation, 3.4, W - 2 * pad,
-                      bold=True, anchor="n")
+        if model.show_designation and desig:
+            _fit_text(r, cx, y, desig, 3.4, W - 2 * pad, bold=True, anchor="n")
             y += 4.0
         # grand prix centre dans l'espace restant
         ptxt = item.price_text(item.price)
@@ -204,11 +207,13 @@ def layout_label(model, item, r):
                       W - 2 * pad, bold=True, anchor="center")
 
 
-def _layout_discount(model, item, r, W, H, pad, cx):
+def _layout_discount(model, item, r, W, H, pad, cx, desig=None):
     """Modele 3 : petit intitule, prix normal barre, prix promo en grand."""
+    if desig is None:
+        desig = item.designation
     y = pad
-    if item.designation:
-        _fit_text(r, cx, y, item.designation, 2.4, W - 2 * pad, anchor="n")
+    if desig:
+        _fit_text(r, cx, y, desig, 2.4, W - 2 * pad, anchor="n")
         y += 2.8
 
     normal = item.price_text(item.price)
@@ -221,6 +226,14 @@ def _layout_discount(model, item, r, W, H, pad, cx):
     # prix promo en grand, centre
     ph = min(7.5, (H - y) - pad)
     r.text(cx, y + (H - y - pad) / 2.0, promo, ph, bold=True, anchor="center")
+
+
+def _cap(text, max_chars):
+    """Tronque ``text`` a ``max_chars`` caracteres (0 = illimite)."""
+    text = "" if text is None else str(text)
+    if max_chars and len(text) > max_chars:
+        return text[:max_chars].rstrip()
+    return text
 
 
 def _fit_text(r, x, y, text, h_mm, max_w, bold=False, anchor="n"):
@@ -371,21 +384,22 @@ class _GdiRenderer(LabelRenderer):
     def _mm_y(self, mm):
         return int(round(mm / 25.4 * self.dy))
 
-    def _font_for(self, h_mm, bold, strike):
-        key = (round(h_mm, 2), bold, strike)
+    def _font_for(self, h_mm, bold):
+        key = (round(h_mm, 2), bold)
         f = self._fonts.get(key)
         if f is None:
+            # NB : pas d'option 'strike out' ici (cle LOGFONT capricieuse selon
+            # les pilotes) ; le barre est trace a la main dans text().
             f = self._win32ui.CreateFont({
                 "name": self.family,
                 "height": -self._mm_y(h_mm),
                 "weight": 700 if bold else 400,
-                "strikeout": 1 if strike else 0,
             })
             self._fonts[key] = f
         return f
 
     def text(self, x, y, s, h_mm, bold=False, anchor="nw", strike=False):
-        self.dc.SelectObject(self._font_for(h_mm, bold, strike))
+        self.dc.SelectObject(self._font_for(h_mm, bold))
         tw, th = self.dc.GetTextExtent(str(s))
         px, py = self._mm_x(x), self._mm_y(y)
         # ajustement horizontal
@@ -399,9 +413,13 @@ class _GdiRenderer(LabelRenderer):
         elif anchor in ("sw", "s", "se"):
             py -= th
         self.dc.TextOut(px, py, str(s))
+        if strike and tw > 0:
+            ly = py + th // 2
+            thick = max(1, th // 14)
+            self.dc.FillSolidRect((px, ly, px + tw, ly + thick), 0)
 
     def measure(self, s, h_mm, bold=False):
-        self.dc.SelectObject(self._font_for(h_mm, bold, False))
+        self.dc.SelectObject(self._font_for(h_mm, bold))
         tw, th = self.dc.GetTextExtent(str(s))
         return tw / self.dx * 25.4, th / self.dy * 25.4
 

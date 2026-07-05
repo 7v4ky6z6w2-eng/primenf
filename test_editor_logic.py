@@ -158,8 +158,24 @@ def test_label_layout_barcode_model():
     assert r.rects, "le modele M1 doit dessiner un code-barres"
     # toutes les barres tiennent dans la largeur de l'etiquette
     assert all(x + w <= m.width_mm + 0.01 for (x, y, w, h) in r.rects)
-    joined = " ".join(t["s"] for t in r.texts)
-    assert "9,90 DA" in joined and "Cafe" in joined
+    # code-barres dans la MOITIE BASSE de l'etiquette
+    assert all(y >= m.height_mm / 2 - 0.5 for (x, y, w, h) in r.rects)
+    # le prix est plus GRAND que la designation
+    price_t = next(t for t in r.texts if "9,90 DA" in t["s"])
+    desig_t = next(t for t in r.texts if "Cafe" in t["s"])
+    assert price_t["h"] > desig_t["h"]
+
+
+def test_label_designation_capped():
+    m = label_print.model_by_key("M1")   # max 20 caracteres
+    long_name = "Article avec un nom vraiment tres tres long"
+    item = label_print.LabelItem(designation=long_name, barcode="1", price=1.0)
+    r = label_print.RecordingRenderer()
+    label_print.layout_label(m, item, r)
+    desig = next(t for t in r.texts if "Article" in t["s"])
+    assert len(desig["s"]) <= m.max_designation_chars
+    assert label_print._cap("abcdefgh", 5) == "abcde"
+    assert label_print._cap("abc", 0) == "abc"
 
 
 def test_label_layout_discount_strikes_normal_price():
