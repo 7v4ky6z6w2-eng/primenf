@@ -190,25 +190,29 @@ promo est **active**. Les prix sont affichés en dinars (`DA`).
 
 #### Réglage de l'imprimante thermique (ex. Xprinter XP‑427D)
 
-L'application **n'impose pas** la taille du papier : elle imprime sur le format
-défini dans le **pilote**. Réglez-le **une fois** (sinon les étiquettes sortent
-décalées ou le code-barres s'imprime en pavé noir) :
+L'application **fixe la taille de la page à UNE étiquette** (largeur × hauteur du
+modèle, ex. 40 × 20 mm) pour ne pas gaspiller plusieurs étiquettes par
+impression — **sans** changer l'orientation. Il reste **un réglage à faire une
+fois** dans le pilote pour que l'imprimante détecte le début de chaque
+étiquette :
 
 1. *Panneau de configuration → Périphériques et imprimantes* → clic droit sur
    **Xprinter XP‑427D** → **Options d'impression**.
-2. **Taille du papier / stock** : créez/choisissez **40 × 20 mm** (largeur ×
-   hauteur, comme le modèle imprimé). Pour le modèle M2, **80 × 20 mm**.
-3. **Type de support** : *étiquettes avec espace (gap)* ; lancez la
-   **calibration du capteur** (bouton FEED maintenu, ou outil de calibration du
-   pilote) pour que l'imprimante détecte le début de chaque étiquette.
-4. **Orientation** : si le texte/code-barres sort tourné, basculez
-   *Portrait/Paysage* ici.
-5. **Vitesse / contraste (darkness)** au besoin, puis *Appliquer*.
+2. **Type de support** : *étiquettes avec espace (gap)*, puis lancez la
+   **calibration du capteur** (bouton FEED maintenu ~3 s, ou l'outil de
+   calibration fourni avec le pilote) afin que l'imprimante repère les découpes.
+3. Idéalement, réglez aussi la **taille du stock** sur **40 × 20 mm** (M1/M3) ou
+   **80 × 20 mm** (M2) pour que l'aperçu du pilote corresponde.
+4. **Contraste (darkness) / vitesse** au besoin, puis *Appliquer*.
 
 Ensuite, dans PRIME : sélectionnez des articles → **Imprimer étiquettes…** →
 choisissez l'imprimante et le nombre de copies → **Imprimer**. Le code-barres
 est tracé sur une **grille de pixels** (barres nettes à 203 dpi) et le prix +
 la désignation occupent la moitié haute (modèle 1).
+
+> Si l'étiquette sort **tournée**, réglez *Portrait/Paysage* dans les options du
+> pilote (l'application ne force pas l'orientation). Si elle sort **décalée**,
+> c'est le capteur d'espace à calibrer (étape 2).
 
 ## ⚠️ À propos de la modification d'une référence (`REF_ART`)
 

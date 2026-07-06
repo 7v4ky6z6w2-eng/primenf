@@ -535,6 +535,47 @@ class _GdiRenderer(LabelRenderer):
 
 _TRANSPARENT = 1          # win32con.TRANSPARENT (mode de fond du texte)
 
+# Champs DEVMODE (constantes Windows fixes) — on ne regle QUE la taille du
+# papier (largeur + longueur), PAS l'orientation, pour ne pas faire pivoter
+# l'etiquette. Objectif : que la "page" fasse exactement UNE etiquette, sinon
+# l'imprimante thermique ejecte plusieurs etiquettes par impression.
+_DM_ORIENTATION = 0x1
+_DM_PAPERSIZE = 0x2
+_DM_PAPERLENGTH = 0x4
+_DM_PAPERWIDTH = 0x8
+_DMPAPER_USER = 256
+
+
+def _open_label_dc(name, model):
+    """DC imprimante dont la page fait exactement une etiquette du ``model``.
+
+    On modifie le DEVMODE : PaperSize=USER + PaperWidth + PaperLength (en
+    dixiemes de mm), SANS toucher a l'orientation. Repli sur le format du
+    pilote si l'operation echoue.
+    """
+    import win32ui
+    try:
+        import win32print
+        import win32gui
+        h = win32print.OpenPrinter(name)
+        try:
+            dm = win32print.GetPrinter(h, 2)["pDevMode"]
+        finally:
+            win32print.ClosePrinter(h)
+        if dm is not None:
+            dm.PaperSize = _DMPAPER_USER
+            dm.PaperWidth = int(round(model.width_mm * 10))     # 0.1 mm
+            dm.PaperLength = int(round(model.height_mm * 10))
+            dm.Fields = ((dm.Fields | _DM_PAPERSIZE | _DM_PAPERWIDTH |
+                          _DM_PAPERLENGTH) & ~_DM_ORIENTATION)
+            hdc = win32gui.CreateDC("WINSPOOL", name, dm)
+            return win32ui.CreateDCFromHandle(hdc)
+    except Exception:      # noqa: BLE001
+        pass
+    dc = win32ui.CreateDC()
+    dc.CreatePrinterDC(name)
+    return dc
+
 
 def print_labels(printer_name, model, items, copies=1):
     """Imprime les etiquettes directement sur ``printer_name``.
@@ -543,23 +584,20 @@ def print_labels(printer_name, model, items, copies=1):
     nombre d'exemplaires par article. Leve RuntimeError si l'impression n'est
     pas disponible (hors Windows) ou en cas d'echec GDI.
 
-    NB : on N'IMPOSE PAS la taille du papier ici. Sur une imprimante thermique
-    (Xprinter XP-427D...), la taille de l'etiquette et le capteur d'espace se
-    reglent dans les PREFERENCES DU PILOTE ; forcer un format via le DEVMODE
-    provoquait un mauvais calage (etiquettes decalees) et un code-barres ecrase.
+    La taille de la page est fixee a UNE etiquette (largeur x hauteur du
+    modele) via le DEVMODE, sans changer l'orientation, pour ne pas gaspiller
+    plusieurs etiquettes par impression.
     """
     if not printing_available():
         raise RuntimeError(
             "L'impression directe necessite Windows avec pywin32 installe "
             "(py -m pip install pywin32).")
-    import win32ui
     import win32con
 
     copies = max(1, int(copies))
     name = printer_name or default_printer()
-    dc = win32ui.CreateDC()
     try:
-        dc.CreatePrinterDC(name)
+        dc = _open_label_dc(name, model)
     except Exception as exc:      # noqa: BLE001
         raise RuntimeError("Imprimante inaccessible : %s" % exc) from exc
 
