@@ -336,16 +336,34 @@ def _fit_text(r, x, y, text, h_mm, max_w, bold=False, anchor="n"):
 
 
 def _draw_barcode(r, data, x, y, w, h, quiet=10):
-    """Dessine un Code 128 (auto B/C) dans le rectangle (x, y, w, h) en mm."""
+    """Dessine un Code 128 (auto B/C) dans le rectangle (x, y, w, h) en mm.
+
+    Quand le renderer expose ``px_per_mm`` (impression / apercu), la largeur
+    d'un module est arrondie a un nombre ENTIER de pixels et les barres sont
+    posees sur une grille de pixels : indispensable pour que le code reste net
+    et scannable (sinon les arrondis fusionnent les barres en aplat noir).
+    """
     widths = code128_widths(data)
     total = sum(widths) + 2 * quiet
-    module = w / float(total)          # largeur d'un module en mm
-    cursor = x + quiet * module        # marge silencieuse a gauche
-    for i, mw in enumerate(widths):
-        bw = mw * module
-        if i % 2 == 0:                 # indice pair = barre noire
-            r.rect(cursor, y, bw, h)
-        cursor += bw
+    ppm = getattr(r, "px_per_mm", None)
+    if ppm:
+        w_px = int(round(w * ppm))
+        module_px = max(1, w_px // total)          # module entier en pixels
+        bc_px = total * module_px
+        cur = round(x * ppm) + max(0, (w_px - bc_px) // 2) + quiet * module_px
+        for i, mw in enumerate(widths):
+            bw = mw * module_px
+            if i % 2 == 0:                          # indice pair = barre noire
+                r.rect(cur / ppm, y, bw / ppm, h)
+            cur += bw
+    else:
+        module = w / float(total)
+        cursor = x + quiet * module
+        for i, mw in enumerate(widths):
+            bw = mw * module
+            if i % 2 == 0:
+                r.rect(cursor, y, bw, h)
+            cursor += bw
 
 
 # --------------------------------------------------------------------------- #
@@ -357,6 +375,7 @@ class TkCanvasRenderer(LabelRenderer):
     def __init__(self, canvas, scale, ox=0, oy=0, family="Arial"):
         self.c = canvas
         self.s = float(scale)          # pixels par mm
+        self.px_per_mm = float(scale)  # grille pour le code-barres
         self.ox = ox
         self.oy = oy
         self.family = family
@@ -455,6 +474,7 @@ class _GdiRenderer(LabelRenderer):
         self.dc = dc
         self.dx = dpi_x
         self.dy = dpi_y
+        self.px_per_mm = dpi_x / 25.4   # grille pixel pour le code-barres
         self.family = family
         self._fonts = {}
         import win32ui
@@ -513,47 +533,7 @@ class _GdiRenderer(LabelRenderer):
         self.dc.FillSolidRect((left, top, right, bottom), 0)   # 0 = noir
 
 
-# Champs DEVMODE (constantes Windows, valeurs fixes).
-_DM_ORIENTATION = 0x1
-_DM_PAPERSIZE = 0x2
-_DM_PAPERLENGTH = 0x4
-_DM_PAPERWIDTH = 0x8
-_DMPAPER_USER = 256
-_DMORIENT_PORTRAIT = 1
-
-
-def _open_label_dc(printer_name, model):
-    """Ouvre un DC imprimante en fixant la taille exacte de l'etiquette.
-
-    Regle le format papier a ``model.width_mm`` x ``model.height_mm`` (en
-    dixiemes de mm) via le DEVMODE, pour que l'etiquette tombe juste sur une
-    imprimante thermique (ex Xprinter XP-427D, 203 dpi, papier 20x40). En cas
-    d'echec, on retombe sur le DEVMODE par defaut du pilote.
-    """
-    import win32ui
-    name = printer_name or default_printer()
-    try:
-        import win32print
-        import win32gui
-        h = win32print.OpenPrinter(name)
-        try:
-            dm = win32print.GetPrinter(h, 2)["pDevMode"]
-        finally:
-            win32print.ClosePrinter(h)
-        if dm is not None:
-            dm.PaperSize = _DMPAPER_USER
-            dm.PaperWidth = int(round(model.width_mm * 10))    # 0.1 mm
-            dm.PaperLength = int(round(model.height_mm * 10))
-            dm.Orientation = _DMORIENT_PORTRAIT
-            dm.Fields |= (_DM_PAPERSIZE | _DM_PAPERWIDTH |
-                          _DM_PAPERLENGTH | _DM_ORIENTATION)
-            hdc = win32gui.CreateDC("WINSPOOL", name, dm)
-            return win32ui.CreateDCFromHandle(hdc)
-    except Exception:      # noqa: BLE001
-        pass               # repli : format papier configure dans le pilote
-    dc = win32ui.CreateDC()
-    dc.CreatePrinterDC(name)
-    return dc
+_TRANSPARENT = 1          # win32con.TRANSPARENT (mode de fond du texte)
 
 
 def print_labels(printer_name, model, items, copies=1):
@@ -562,16 +542,24 @@ def print_labels(printer_name, model, items, copies=1):
     ``model`` : LabelModel ; ``items`` : liste de LabelItem ; ``copies`` :
     nombre d'exemplaires par article. Leve RuntimeError si l'impression n'est
     pas disponible (hors Windows) ou en cas d'echec GDI.
+
+    NB : on N'IMPOSE PAS la taille du papier ici. Sur une imprimante thermique
+    (Xprinter XP-427D...), la taille de l'etiquette et le capteur d'espace se
+    reglent dans les PREFERENCES DU PILOTE ; forcer un format via le DEVMODE
+    provoquait un mauvais calage (etiquettes decalees) et un code-barres ecrase.
     """
     if not printing_available():
         raise RuntimeError(
             "L'impression directe necessite Windows avec pywin32 installe "
             "(py -m pip install pywin32).")
+    import win32ui
     import win32con
 
     copies = max(1, int(copies))
+    name = printer_name or default_printer()
+    dc = win32ui.CreateDC()
     try:
-        dc = _open_label_dc(printer_name, model)
+        dc.CreatePrinterDC(name)
     except Exception as exc:      # noqa: BLE001
         raise RuntimeError("Imprimante inaccessible : %s" % exc) from exc
 
@@ -583,6 +571,11 @@ def print_labels(printer_name, model, items, copies=1):
         for item in items:
             for _ in range(copies):
                 dc.StartPage()
+                # fond de texte transparent + couleurs explicites (evite tout
+                # aplat noir derriere le texte selon les pilotes)
+                dc.SetBkMode(_TRANSPARENT)
+                dc.SetTextColor(0x000000)
+                dc.SetBkColor(0xFFFFFF)
                 layout_label(model, item, r)
                 dc.EndPage()
         dc.EndDoc()

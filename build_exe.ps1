@@ -47,7 +47,6 @@ Write-Host "== Installation/maj des dependances (PyInstaller a jour pour 3.14) =
 Write-Host "== Construction de l'executable ==" -ForegroundColor Cyan
 & $exe @pre -m PyInstaller --noconfirm --clean --onefile --windowed --name BulkArticleEditor `
     --hidden-import win32ui --hidden-import win32print --hidden-import win32con `
-    --hidden-import win32gui `
     bulk_article_editor.py
 
 Write-Host ""

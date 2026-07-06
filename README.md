@@ -186,11 +186,29 @@ promo est **active**. Les prix sont affichés en dinars (`DA`).
 
 > L'impression directe nécessite **Windows** avec **pywin32** (installé
 > automatiquement par les scripts de build sous Windows). L'aperçu, lui, marche
-> partout. L'application **fixe automatiquement** la taille de l'étiquette
-> (40×20 mm / 80×20 mm) sur l'imprimante via le pilote — testé pour les
-> imprimantes thermiques type **Xprinter XP‑427D** (203 dpi, papier 20×40).
-> Si votre étiquette sort décalée ou tournée, réglez la taille du support
-> (« stock ») dans les préférences du pilote et signalez-le-moi.
+> partout.
+
+#### Réglage de l'imprimante thermique (ex. Xprinter XP‑427D)
+
+L'application **n'impose pas** la taille du papier : elle imprime sur le format
+défini dans le **pilote**. Réglez-le **une fois** (sinon les étiquettes sortent
+décalées ou le code-barres s'imprime en pavé noir) :
+
+1. *Panneau de configuration → Périphériques et imprimantes* → clic droit sur
+   **Xprinter XP‑427D** → **Options d'impression**.
+2. **Taille du papier / stock** : créez/choisissez **40 × 20 mm** (largeur ×
+   hauteur, comme le modèle imprimé). Pour le modèle M2, **80 × 20 mm**.
+3. **Type de support** : *étiquettes avec espace (gap)* ; lancez la
+   **calibration du capteur** (bouton FEED maintenu, ou outil de calibration du
+   pilote) pour que l'imprimante détecte le début de chaque étiquette.
+4. **Orientation** : si le texte/code-barres sort tourné, basculez
+   *Portrait/Paysage* ici.
+5. **Vitesse / contraste (darkness)** au besoin, puis *Appliquer*.
+
+Ensuite, dans PRIME : sélectionnez des articles → **Imprimer étiquettes…** →
+choisissez l'imprimante et le nombre de copies → **Imprimer**. Le code-barres
+est tracé sur une **grille de pixels** (barres nettes à 203 dpi) et le prix +
+la désignation occupent la moitié haute (modèle 1).
 
 ## ⚠️ À propos de la modification d'une référence (`REF_ART`)
 
