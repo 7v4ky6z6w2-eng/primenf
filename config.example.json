@@ -1,0 +1,37 @@
+{
+  "host": "localhost",
+  "port": 3050,
+  "database": "C:\\PRIME\\PR22.FDB",
+  "user": "SYSDBA",
+  "password": "masterkey",
+  "charset": "WIN1256",
+
+  "fb_client_library": null,
+
+  "code_type_piece": "PC_AC_B",
+  "etat": null,
+
+  "code_tiers": "",
+  "raison_sociale": "",
+  "code_depot": "",
+  "create_missing_tiers": true,
+
+  "default_famille": "TOUS",
+  "default_famille_intitule": "Tous",
+  "default_unite": "",
+  "default_unite_intitule": "Unite",
+  "default_tva": 0,
+
+  "prix_vente_auto": true,
+  "marge_pct": 50,
+  "arrondi_paliers": [[200, 5], [1000, 10], [null, 50]],
+
+  "match_famille_par_intitule": true,
+  "create_missing_familles": true,
+  "calc_prix_achat_ttc": true,
+
+  "reserved_id_threshold": 1000000,
+
+  "barcode_depuis_ref": false,
+  "colonne_prix": "prix"
+}
